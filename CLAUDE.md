@@ -7,9 +7,13 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 This is a pnpm workspace monorepo with two independent apps:
 
 - `apps/frontend` — Next.js (App Router, TypeScript). See `apps/frontend/CLAUDE.md`.
-- `apps/backend` — NestJS (TypeScript). See `apps/backend/CLAUDE.md`.
+- `apps/backend` — NestJS (TypeScript), with a Prisma/Postgres auth feature. See `apps/backend/CLAUDE.md`.
 
-Both are minimal, freshly-scaffolded projects (no business logic yet) wired together only at the tooling level described below.
+The frontend is a minimal scaffold; the backend has an email/password → JWT auth module. They are wired together at the tooling level described below.
+
+## Database
+
+`docker-compose.yml` (repo root) runs Postgres 16 for local dev; credentials come from the root `.env` (see `.env.example`: `POSTGRES_USER`/`POSTGRES_PASSWORD`/`POSTGRES_DB`/`POSTGRES_PORT`). Start it with `docker compose up -d`. The backend connects via its own `DATABASE_URL` (`apps/backend/.env`) and manages schema with Prisma — the backend's e2e tests hit this real database, so it must be up before `pnpm --filter backend test:e2e`.
 
 ## Commands (run from repo root)
 
