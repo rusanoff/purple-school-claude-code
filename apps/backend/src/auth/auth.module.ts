@@ -4,6 +4,7 @@ import { CqrsModule } from '@nestjs/cqrs';
 import { JwtModule, JwtModuleOptions, JwtSignOptions } from '@nestjs/jwt';
 import { AuthController } from './auth.controller';
 import { CommandHandlers } from './commands';
+import { JwtAuthGuard } from './guards/jwt-auth.guard';
 import { TokenService } from './services/token.service';
 
 @Module({
@@ -22,6 +23,9 @@ import { TokenService } from './services/token.service';
     }),
   ],
   controllers: [AuthController],
-  providers: [TokenService, ...CommandHandlers],
+  providers: [TokenService, JwtAuthGuard, ...CommandHandlers],
+  // Exported so other feature modules (e.g. MeetingModule) can protect their
+  // routes with the same guard/secret without re-wiring JWT config.
+  exports: [JwtModule, JwtAuthGuard],
 })
 export class AuthModule {}

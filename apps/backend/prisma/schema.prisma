@@ -8,11 +8,26 @@ datasource db {
 }
 
 model User {
-  id           String   @id @default(uuid())
-  email        String   @unique
+  id           String    @id @default(uuid())
+  email        String    @unique
   passwordHash String
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+  meetings     Meeting[]
+
+  @@map("users")
+}
+
+model Meeting {
+  id           String   @id @default(uuid())
+  title        String
+  date         DateTime
+  participants String[]
+  ownerId      String
+  owner        User     @relation(fields: [ownerId], references: [id], onDelete: Cascade)
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
 
-  @@map("users")
+  @@index([ownerId])
+  @@map("meetings")
 }
