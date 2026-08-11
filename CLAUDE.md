@@ -13,28 +13,13 @@ The frontend is a minimal scaffold; the backend has an email/password → JWT au
 
 ## Database
 
-`docker-compose.yml` (repo root) runs Postgres 16 for local dev; credentials come from the root `.env` (see `.env.example`: `POSTGRES_USER`/`POSTGRES_PASSWORD`/`POSTGRES_DB`/`POSTGRES_PORT`). Start it with `docker compose up -d`. The backend connects via its own `DATABASE_URL` (`apps/backend/.env`) and manages schema with Prisma — the backend's e2e tests hit this real database, so it must be up before `pnpm --filter backend test:e2e`.
-
-## Commands (run from repo root)
-
-```bash
-pnpm install          # install deps for both apps (single lockfile, single node_modules)
-pnpm dev              # run frontend + backend concurrently (frontend :3000, backend :3001)
-pnpm dev:frontend     # run only the frontend dev server
-pnpm dev:backend      # run only the backend in watch mode
-pnpm build            # build frontend, then backend
-pnpm lint             # lint frontend, then backend
-pnpm format           # prettier --write across frontend, then backend
-```
-
-To target a single app directly, use pnpm's `--filter`, e.g. `pnpm --filter backend test`, `pnpm --filter frontend build`.
+Start local Postgres with `docker compose up -d` (repo root). The backend connects via its own `DATABASE_URL` (`apps/backend/.env`) and manages schema with Prisma — the backend's e2e tests hit this real database, so it must be up before `pnpm --filter backend test:e2e`.
 
 ## Shared tooling architecture
 
 The two apps intentionally do **not** have fully independent lint/format setups — they share a common base so rules stay consistent:
 
-- `pnpm-workspace.yaml` (root) — defines the workspace (`apps/*`) and `ignoredBuiltDependencies`.
-- `.prettierrc.json` (root) — the single Prettier config used by both apps (`singleQuote`, `trailingComma: all`). Neither app has its own `.prettierrc`.
+- `.prettierrc.json` (root) is the single Prettier config for both apps — neither app has its own `.prettierrc`.
 - `eslint.base.mjs` (root) — a shared flat-config array (`eslint:recommended` + `eslint-plugin-prettier/recommended`) imported by both apps' `eslint.config.mjs` via a relative path (`../../eslint.base.mjs`). Each app then layers its own framework-specific rules on top (Next's config in frontend, `typescript-eslint` type-checked rules + Nest globals in backend).
 - Shared devDependencies used only by that root config file (`eslint`, `@eslint/js`, `eslint-config-prettier`, `eslint-plugin-prettier`, `prettier`) live in the **root** `package.json`, not duplicated in each app. Anything an app's own `eslint.config.mjs` imports directly (e.g. backend's `typescript-eslint`, `globals`) must stay a direct dependency of that app, per pnpm's strict (non-hoisted) `node_modules` — don't move those to root.
 
@@ -46,4 +31,4 @@ Frontend defaults to `:3000` (Next.js default). Backend's default port was chang
 
 ## Keeping this documentation in sync
 
-Whenever a change alters the architecture described here — a new app/package added to the workspace, shared tooling moved or restructured, port conventions changed, cross-app commands added/removed — update this file (and the affected app's `CLAUDE.md`) in the same change. Do not let these docs drift from what the code actually does.
+Whenever a change alters the architecture described here — a new app/package added to the workspace, shared tooling moved or restructured, port conventions changed — update this file (and the affected app's `CLAUDE.md`) in the same change. Do not let these docs drift from what the code actually does.
