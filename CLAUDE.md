@@ -9,7 +9,11 @@ This is a pnpm workspace monorepo with two independent apps:
 - `apps/frontend` — Next.js (App Router, TypeScript). See `apps/frontend/CLAUDE.md`.
 - `apps/backend` — NestJS (TypeScript), with a Prisma/Postgres auth feature. See `apps/backend/CLAUDE.md`.
 
-The frontend is a minimal scaffold; the backend has an email/password → JWT auth module. They are wired together at the tooling level described below.
+The backend has an email/password → JWT auth module; the frontend consumes it from a registration page. They are wired together at the tooling level described below.
+
+## Frontend ↔ backend wiring
+
+The frontend never calls the backend cross-origin. `apps/frontend/next.config.ts` rewrites `/api/:path*` to `${BACKEND_URL}/:path*` (default `http://localhost:3001`), so the browser only talks to the frontend's own origin and **the backend needs no CORS setup**. If that ever changes, both sides must change together — see `apps/frontend/CLAUDE.md`.
 
 ## Database
 
