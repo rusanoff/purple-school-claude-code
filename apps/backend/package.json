@@ -64,6 +64,7 @@
     ],
     "rootDir": "src",
     "testRegex": ".*\\.spec\\.ts$",
+    "passWithNoTests": true,
     "transform": {
       "^.+\\.(t|j)s$": "ts-jest"
     },
