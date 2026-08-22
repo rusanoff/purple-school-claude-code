@@ -1,52 +1,15 @@
 /**
- * Client for the backend auth API (`apps/backend/src/auth`).
- *
- * Requests go to the same origin under `/api/*` and are proxied to the backend
- * by the rewrite in `next.config.ts`, so no CORS setup is needed.
+ * Client for the backend auth API (`apps/backend/src/auth`), plus the
+ * `localStorage`-backed access token used by every authenticated request.
  */
+
+import { apiFetch, ApiError } from './api';
+
+export { ApiError };
 
 /** Mirrors the backend's `AuthResponse` interface. */
 export interface AuthResponse {
   accessToken: string;
-}
-
-export class ApiError extends Error {
-  constructor(
-    message: string,
-    readonly status: number,
-  ) {
-    super(message);
-    this.name = 'ApiError';
-  }
-}
-
-/**
- * Nest's exception body. `message` is a plain string for thrown HTTP
- * exceptions (e.g. 409 on a duplicate email) and a string array for
- * `ValidationPipe` failures.
- */
-interface ErrorBody {
-  message?: string | string[];
-}
-
-const FALLBACK_ERROR = 'Something went wrong. Please try again.';
-
-async function toApiError(response: Response): Promise<ApiError> {
-  let message = FALLBACK_ERROR;
-
-  try {
-    const body = (await response.json()) as ErrorBody;
-
-    if (Array.isArray(body.message)) {
-      message = body.message.join('. ');
-    } else if (body.message) {
-      message = body.message;
-    }
-  } catch {
-    // Non-JSON body (backend down, proxy error) — keep the fallback message.
-  }
-
-  return new ApiError(message, response.status);
 }
 
 /** `POST /auth/register` — 201 with a JWT, 409 if the email is taken. */
@@ -54,21 +17,23 @@ export async function register(
   email: string,
   password: string,
 ): Promise<AuthResponse> {
-  let response: Response;
+  const response = await apiFetch('/auth/register', {
+    method: 'POST',
+    body: JSON.stringify({ email, password }),
+  });
 
-  try {
-    response = await fetch('/api/auth/register', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ email, password }),
-    });
-  } catch {
-    throw new ApiError('Cannot reach the server. Is the backend running?', 0);
-  }
+  return (await response.json()) as AuthResponse;
+}
 
-  if (!response.ok) {
-    throw await toApiError(response);
-  }
+/** `POST /auth/login` — 200 with a JWT, 401 on invalid credentials. */
+export async function login(
+  email: string,
+  password: string,
+): Promise<AuthResponse> {
+  const response = await apiFetch('/auth/login', {
+    method: 'POST',
+    body: JSON.stringify({ email, password }),
+  });
 
   return (await response.json()) as AuthResponse;
 }
@@ -81,4 +46,38 @@ export function saveAccessToken(token: string): void {
 
 export function getAccessToken(): string | null {
   return localStorage.getItem(ACCESS_TOKEN_KEY);
+}
+
+export function clearAccessToken(): void {
+  localStorage.removeItem(ACCESS_TOKEN_KEY);
+}
+
+/** Mirrors the JWT payload the backend's `TokenService` signs. */
+interface JwtPayload {
+  sub: string;
+  email: string;
+}
+
+/**
+ * Decodes a JWT's payload without verifying its signature. Safe only for
+ * reading claims the backend already vouched for when it issued the token
+ * (e.g. to show the signed-in user's email) — never use this to decide
+ * whether a request is authorized, that call belongs to the backend.
+ */
+function decodeJwtPayload(token: string): JwtPayload | null {
+  try {
+    const payload = token.split('.')[1];
+    const json = atob(payload.replace(/-/g, '+').replace(/_/g, '/'));
+
+    return JSON.parse(json) as JwtPayload;
+  } catch {
+    return null;
+  }
+}
+
+/** The signed-in user's email, read from the stored access token, if any. */
+export function getCurrentUserEmail(): string | null {
+  const token = getAccessToken();
+
+  return token ? (decodeJwtPayload(token)?.email ?? null) : null;
 }

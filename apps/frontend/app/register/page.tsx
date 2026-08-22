@@ -9,12 +9,14 @@ import {
   Form,
   InputGroup,
   Label,
+  Link,
   Spinner,
   TextField,
 } from '@heroui/react';
 import { useEffect, useRef, useState } from 'react';
 
 import { Brand } from '@/components/brand';
+import { CheckIcon, EnvelopeIcon, EyeIcon, LockIcon } from '@/components/icons';
 import { ApiError, register, saveAccessToken } from '@/lib/auth';
 
 /** Matches the backend's `@MinLength(6)` on `AuthCredentialsDto.password`. */
@@ -26,78 +28,6 @@ const MIN_PASSWORD_LENGTH = 6;
  * trip, so it must never reject an address the backend would accept.
  */
 const EMAIL_PATTERN = /^[^\s@]+@[^\s@.]+(?:\.[^\s@.]+)+$/;
-
-function EnvelopeIcon() {
-  return (
-    <svg
-      aria-hidden="true"
-      className="size-4"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth={1.6}
-      viewBox="0 0 24 24"
-    >
-      <rect height="14" rx="2" width="18" x="3" y="5" />
-      <path
-        d="m3.5 7 8.5 6 8.5-6"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-      />
-    </svg>
-  );
-}
-
-function LockIcon() {
-  return (
-    <svg
-      aria-hidden="true"
-      className="size-4"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth={1.6}
-      viewBox="0 0 24 24"
-    >
-      <rect height="10" rx="2" width="14" x="5" y="11" />
-      <path d="M8 11V8a4 4 0 1 1 8 0v3" strokeLinecap="round" />
-    </svg>
-  );
-}
-
-function EyeIcon({ isOpen }: { isOpen: boolean }) {
-  return (
-    <svg
-      aria-hidden="true"
-      className="size-4"
-      fill="none"
-      stroke="currentColor"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      strokeWidth={1.6}
-      viewBox="0 0 24 24"
-    >
-      <path d="M2.5 12S6 5.5 12 5.5 21.5 12 21.5 12 18 18.5 12 18.5 2.5 12 2.5 12Z" />
-      <circle cx="12" cy="12" r="3" />
-      {!isOpen && <path d="m4 4 16 16" />}
-    </svg>
-  );
-}
-
-function CheckIcon() {
-  return (
-    <svg
-      aria-hidden="true"
-      className="size-7"
-      fill="none"
-      stroke="currentColor"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      strokeWidth={2}
-      viewBox="0 0 24 24"
-    >
-      <path d="m5 12.5 4.5 4.5L19 7.5" />
-    </svg>
-  );
-}
 
 export default function RegisterPage() {
   const [isPending, setIsPending] = useState(false);
@@ -331,7 +261,10 @@ export default function RegisterPage() {
                 </Form>
               </Card.Content>
 
-              <Card.Footer>
+              <Card.Footer className="flex-col items-start gap-3">
+                <p className="text-muted text-sm">
+                  Already have an account? <Link href="/login">Sign in</Link>
+                </p>
                 <p className="text-muted text-sm">
                   By signing up you agree to our terms of service.
                 </p>
