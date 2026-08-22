@@ -12,14 +12,20 @@ import {
   Spinner,
   TextField,
 } from '@heroui/react';
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 
 import { Brand } from '@/components/brand';
 import { ApiError, register, saveAccessToken } from '@/lib/auth';
 
 /** Matches the backend's `@MinLength(6)` on `AuthCredentialsDto.password`. */
 const MIN_PASSWORD_LENGTH = 6;
-const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/;
+/**
+ * Loosely mirrors the backend's `@IsEmail()`: a local part, then one or more
+ * dot-separated domain labels, none of them empty. Deliberately permissive —
+ * the backend is the authority, this only catches obvious typos before a round
+ * trip, so it must never reject an address the backend would accept.
+ */
+const EMAIL_PATTERN = /^[^\s@]+@[^\s@.]+(?:\.[^\s@.]+)+$/;
 
 function EnvelopeIcon() {
   return (
@@ -98,6 +104,33 @@ export default function RegisterPage() {
   const [isRegistered, setIsRegistered] = useState(false);
   const [isPasswordVisible, setIsPasswordVisible] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  /**
+   * Server errors that belong to one field — currently just the 409 on a
+   * duplicate email. React Aria renders these in that field's `FieldError` and
+   * clears them by itself as soon as the user edits the value, which is why
+   * they are kept apart from the form-level `error`.
+   */
+  const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
+
+  const alertRef = useRef<HTMLDivElement>(null);
+  const emailRef = useRef<HTMLInputElement>(null);
+  const successRef = useRef<HTMLDivElement>(null);
+
+  /**
+   * Submitting replaces or adds content the user is not looking at, and the
+   * submit button they pressed may be unmounted. Move focus to whatever the
+   * outcome was so keyboard and screen reader users land on it instead of
+   * being dropped back on `<body>`.
+   */
+  useEffect(() => {
+    if (isRegistered) {
+      successRef.current?.focus();
+    } else if (fieldErrors.email) {
+      emailRef.current?.focus();
+    } else if (error) {
+      alertRef.current?.focus();
+    }
+  }, [error, fieldErrors, isRegistered]);
 
   const handleSubmit = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -108,22 +141,37 @@ export default function RegisterPage() {
 
     setIsPending(true);
     setError(null);
+    setFieldErrors({});
 
     try {
       const { accessToken } = await register(email, password);
       saveAccessToken(accessToken);
       setIsRegistered(true);
     } catch (cause) {
-      setError(
-        cause instanceof ApiError ? cause.message : 'Something went wrong.',
-      );
+      // A 409 is about the email specifically, so it belongs on that field
+      // rather than in the form-level alert.
+      if (cause instanceof ApiError && cause.status === 409) {
+        setFieldErrors({ email: cause.message });
+      } else {
+        setError(
+          cause instanceof ApiError ? cause.message : 'Something went wrong.',
+        );
+      }
     } finally {
       setIsPending(false);
     }
   };
 
+  // Any edit makes the form-level error stale. Field-level server errors need
+  // no such handling — React Aria clears those itself.
+  const handleChange = () => {
+    if (error) {
+      setError(null);
+    }
+  };
+
   return (
-    <main className="relative flex min-h-screen items-center justify-center px-4 py-12">
+    <main className="relative flex min-h-dvh items-center justify-center px-4 py-12">
       <div
         aria-hidden="true"
         className="pointer-events-none fixed inset-0 -z-10 overflow-hidden"
@@ -137,23 +185,33 @@ export default function RegisterPage() {
 
         <Card className="gap-6 p-8 shadow-xl">
           {isRegistered ? (
-            <>
+            <div
+              className="flex flex-col gap-6 outline-none"
+              ref={successRef}
+              tabIndex={-1}
+            >
               <div className="bg-success/15 text-success flex size-14 items-center justify-center rounded-full">
                 <CheckIcon />
               </div>
               <Card.Header>
-                <Card.Title className="text-2xl">
+                <Card.Title
+                  className="text-2xl"
+                  render={(props) => <h1 {...props} />}
+                >
                   You&apos;re all set
                 </Card.Title>
                 <Card.Description>
                   Your account has been created and you are signed in.
                 </Card.Description>
               </Card.Header>
-            </>
+            </div>
           ) : (
             <>
               <Card.Header>
-                <Card.Title className="text-2xl">
+                <Card.Title
+                  className="text-2xl"
+                  render={(props) => <h1 {...props} />}
+                >
                   Create your account
                 </Card.Title>
                 <Card.Description>
@@ -162,9 +220,19 @@ export default function RegisterPage() {
               </Card.Header>
 
               <Card.Content>
-                <Form className="flex flex-col gap-5" onSubmit={handleSubmit}>
+                <Form
+                  className="flex flex-col gap-5"
+                  validationErrors={fieldErrors}
+                  onSubmit={handleSubmit}
+                >
                   {error && (
-                    <Alert status="danger">
+                    <Alert
+                      className="outline-none"
+                      ref={alertRef}
+                      role="alert"
+                      status="danger"
+                      tabIndex={-1}
+                    >
                       <Alert.Indicator />
                       <Alert.Content>
                         <Alert.Title>Registration failed</Alert.Title>
@@ -176,14 +244,18 @@ export default function RegisterPage() {
                   <TextField
                     fullWidth
                     isRequired
-                    isDisabled={isPending}
                     name="email"
                     type="email"
-                    validate={(value) =>
-                      EMAIL_PATTERN.test(value)
+                    onChange={handleChange}
+                    validate={(value) => {
+                      if (!value) {
+                        return 'Enter your email address.';
+                      }
+
+                      return EMAIL_PATTERN.test(value)
                         ? null
-                        : 'Enter a valid email address.'
-                    }
+                        : 'Enter a valid email address.';
+                    }}
                   >
                     <Label>Email</Label>
                     <InputGroup>
@@ -191,8 +263,11 @@ export default function RegisterPage() {
                         <EnvelopeIcon />
                       </InputGroup.Prefix>
                       <InputGroup.Input
+                        autoFocus
                         autoComplete="email"
+                        className="min-w-0"
                         placeholder="you@example.com"
+                        ref={emailRef}
                       />
                     </InputGroup>
                     <FieldError />
@@ -201,14 +276,18 @@ export default function RegisterPage() {
                   <TextField
                     fullWidth
                     isRequired
-                    isDisabled={isPending}
                     name="password"
                     type={isPasswordVisible ? 'text' : 'password'}
-                    validate={(value) =>
-                      value.length >= MIN_PASSWORD_LENGTH
+                    onChange={handleChange}
+                    validate={(value) => {
+                      if (!value) {
+                        return 'Enter a password.';
+                      }
+
+                      return value.length >= MIN_PASSWORD_LENGTH
                         ? null
-                        : `Password must be at least ${MIN_PASSWORD_LENGTH} characters.`
-                    }
+                        : `Password must be at least ${MIN_PASSWORD_LENGTH} characters.`;
+                    }}
                   >
                     <Label>Password</Label>
                     <InputGroup>
@@ -217,6 +296,7 @@ export default function RegisterPage() {
                       </InputGroup.Prefix>
                       <InputGroup.Input
                         autoComplete="new-password"
+                        className="min-w-0"
                         placeholder="••••••••"
                       />
                       <InputGroup.Suffix>
