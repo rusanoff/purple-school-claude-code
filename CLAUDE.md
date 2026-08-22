@@ -29,6 +29,10 @@ The two apps intentionally do **not** have fully independent lint/format setups 
 
 When touching lint/format rules, prefer editing `eslint.base.mjs` or `.prettierrc.json` at the root if the change should apply to both apps; only touch an app's own `eslint.config.mjs` for framework-specific rules.
 
+## Git hooks
+
+Husky manages git hooks; the root `prepare` script (`husky`) installs them on `pnpm install`. `.husky/pre-commit`, before every commit: brings up the root `docker-compose.yml` Postgres service (`docker compose up -d postgres`, a no-op if it's already running), polls `pg_isready` for up to 30s so a cold start has time to become healthy, then runs `pnpm lint && pnpm test && pnpm test:e2e`. Root `lint` covers both apps; root `test` runs only `pnpm --filter backend test` (unit tests, `passWithNoTests: true` — the frontend has no test suite yet); root `test:e2e` runs `pnpm --filter backend test:e2e` against that real Postgres instance. Because e2e now runs on every commit, **committing requires Docker to be available** — if Postgres never becomes ready within the poll window, the e2e step fails with a connection error rather than the hook hanging indefinitely. If the frontend gains tests, add them to root `test`.
+
 ## Port conventions
 
 Frontend defaults to `:3000` (Next.js default). Backend's default port was changed from Nest's default `3000` to **`3001`** in `apps/backend/src/main.ts` specifically so both apps can run at once via `pnpm dev` without a collision. Keep this in mind if either app's port is changed in the future — they must not collide again.

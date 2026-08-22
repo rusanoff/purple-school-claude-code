@@ -7,7 +7,10 @@
     "dev:backend": "pnpm --filter backend start:dev",
     "build": "pnpm --filter frontend build && pnpm --filter backend build",
     "lint": "pnpm --filter frontend lint && pnpm --filter backend lint",
-    "format": "pnpm --filter frontend format && pnpm --filter backend format"
+    "format": "pnpm --filter frontend format && pnpm --filter backend format",
+    "test": "pnpm --filter backend test",
+    "test:e2e": "pnpm --filter backend test:e2e",
+    "prepare": "husky"
   },
   "devDependencies": {
     "@eslint/js": "^9.18.0",
@@ -15,6 +18,7 @@
     "eslint": "^9.18.0",
     "eslint-config-prettier": "^10.0.1",
     "eslint-plugin-prettier": "^5.2.2",
+    "husky": "^9.1.7",
     "prettier": "^3.4.2"
   }
 }
