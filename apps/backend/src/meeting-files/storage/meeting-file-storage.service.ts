@@ -2,7 +2,6 @@ import { randomUUID } from 'node:crypto';
 import { createWriteStream } from 'node:fs';
 import { mkdir, rm, stat } from 'node:fs/promises';
 import { extname, join, resolve } from 'node:path';
-import { Transform, TransformCallback } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import { BadRequestException, Injectable, OnModuleInit } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
@@ -18,8 +17,6 @@ const DEFAULT_MAX_FILE_SIZE_BYTES = 50 * 1024 * 1024; // 50MB
 // never the client-supplied name, per the path-traversal/collision warning
 // in docs/research-meeting-upload.md §1.
 const SAFE_EXTENSION_PATTERN = /^\.[a-zA-Z0-9]{1,10}$/;
-
-class FileTooLargeError extends Error {}
 
 export interface SavedFile {
   /** Original filename as sent by the client — display/Content-Disposition
@@ -52,13 +49,7 @@ export class MeetingFileStorageService implements OnModuleInit {
     this.storageDir = resolve(
       this.config.get<string>('FILE_STORAGE_DIR') ?? DEFAULT_STORAGE_DIR,
     );
-    const configuredMax = Number(
-      this.config.get<string>('FILE_MAX_SIZE_BYTES'),
-    );
-    this.maxFileSizeBytes =
-      Number.isFinite(configuredMax) && configuredMax > 0
-        ? configuredMax
-        : DEFAULT_MAX_FILE_SIZE_BYTES;
+    this.maxFileSizeBytes = this.resolveMaxFileSizeBytes();
   }
 
   async onModuleInit(): Promise<void> {
@@ -73,7 +64,17 @@ export class MeetingFileStorageService implements OnModuleInit {
       throw new BadRequestException('Expected a multipart/form-data request');
     }
 
-    const data = await request.file();
+    // Passing `limits.fileSize` per-call (rather than relying on the fixed
+    // ceiling `@fastify/multipart` was registered with in src/multipart.ts)
+    // is what lets FILE_MAX_SIZE_BYTES be the single source of truth for
+    // "too large" — no second, independent limit to drift out of sync with
+    // it. `throwFileSizeLimit: false` opts out of the plugin's own
+    // error-on-limit machinery in favour of the `truncated` check below,
+    // which works uniformly for both request.file() call sites.
+    const data = await request.file({
+      limits: { fileSize: this.maxFileSizeBytes },
+      throwFileSizeLimit: false,
+    });
     if (!data) {
       throw new BadRequestException('No file was uploaded');
     }
@@ -89,22 +90,17 @@ export class MeetingFileStorageService implements OnModuleInit {
     const diskFilename = this.generateDiskFilename(data.filename);
     const diskPath = join(this.storageDir, diskFilename);
 
-    try {
-      await pipeline(
-        data.file,
-        this.createSizeLimiter(this.maxFileSizeBytes),
-        createWriteStream(diskPath),
-      );
-    } catch (error) {
-      // pipeline() awaits every stream closing before settling, so the
-      // partially-written file is safe to remove immediately here.
+    await pipeline(data.file, createWriteStream(diskPath));
+
+    if (data.file.truncated) {
+      // Busboy doesn't error the stream when the limit is hit — it just
+      // stops it early and flags `truncated`, so the write above always
+      // "succeeds" even for an oversized upload. The partial file has to be
+      // removed explicitly here, after the fact.
       await rm(diskPath, { force: true });
-      if (error instanceof FileTooLargeError) {
-        throw new BadRequestException(
-          `File exceeds the maximum allowed size of ${this.maxFileSizeBytes} bytes`,
-        );
-      }
-      throw error;
+      throw new BadRequestException(
+        `File exceeds the maximum allowed size of ${this.maxFileSizeBytes} bytes`,
+      );
     }
 
     const { size } = await stat(diskPath);
@@ -117,30 +113,36 @@ export class MeetingFileStorageService implements OnModuleInit {
     };
   }
 
+  /** Removes a previously saved file — used to undo `saveUploadedFile` when
+   * a step after it (e.g. persisting metadata) fails, so a rejected upload
+   * never leaves an orphaned file behind. */
+  async deleteFile(diskFilename: string): Promise<void> {
+    await rm(join(this.storageDir, diskFilename), { force: true });
+  }
+
   private generateDiskFilename(originalFilename: string): string {
     const ext = extname(originalFilename);
     const safeExt = SAFE_EXTENSION_PATTERN.test(ext) ? ext : '';
     return `${randomUUID()}${safeExt}`;
   }
 
-  /** Aborts the pipeline once more than `maxBytes` has streamed through —
-   * an independent, per-call-configurable check, not tied to the fixed
-   * limit `@fastify/multipart` itself was registered with. */
-  private createSizeLimiter(maxBytes: number): Transform {
-    let received = 0;
-    return new Transform({
-      transform(
-        chunk: Buffer,
-        _encoding: BufferEncoding,
-        callback: TransformCallback,
-      ) {
-        received += chunk.length;
-        if (received > maxBytes) {
-          callback(new FileTooLargeError());
-          return;
-        }
-        callback(null, chunk);
-      },
-    });
+  /** `undefined`/empty means "not set" and falls back to the default; any
+   * other value must be a non-negative integer or startup fails loudly —
+   * silently coercing an invalid or zero value to the default would hide a
+   * real misconfiguration (including "0" meaning "reject every upload"). */
+  private resolveMaxFileSizeBytes(): number {
+    const raw = this.config.get<string>('FILE_MAX_SIZE_BYTES');
+    if (raw === undefined || raw === '') {
+      return DEFAULT_MAX_FILE_SIZE_BYTES;
+    }
+
+    const parsed = Number(raw);
+    if (!Number.isInteger(parsed) || parsed < 0) {
+      throw new Error(
+        `FILE_MAX_SIZE_BYTES must be a non-negative integer, got: "${raw}"`,
+      );
+    }
+
+    return parsed;
   }
 }

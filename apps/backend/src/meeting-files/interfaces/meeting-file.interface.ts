@@ -19,7 +19,11 @@ export function toMeetingFileResponse(file: MeetingFile): MeetingFileResponse {
     uploadedById: file.uploadedById,
     filename: file.filename,
     mimeType: file.mimeType,
-    size: file.size,
+    // `size` is a BigInt column (Int would overflow past ~2.1GB, plausible
+    // for an audio/video recording) — converted to a plain number here
+    // since bigint isn't directly JSON-serializable and no realistic
+    // upload gets anywhere near Number.MAX_SAFE_INTEGER bytes.
+    size: Number(file.size),
     createdAt: file.createdAt.toISOString(),
   };
 }

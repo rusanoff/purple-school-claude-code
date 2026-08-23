@@ -255,5 +255,55 @@ describe('Meeting files (e2e)', () => {
       // The partially-written file must be cleaned up, not left behind.
       expect(readdirSync(storageDir).length).toBe(entriesBefore);
     });
+
+    // Regression: MIME allowlist matching used to be case-sensitive.
+    it('accepts a differently-cased but otherwise allowed Content-Type', async () => {
+      const { token } = await registerUserWithEmail();
+      const meetingId = await createMeeting(token);
+
+      const response = await request(app.getHttpServer())
+        .post(`/meetings/${meetingId}/files`)
+        .set('Authorization', `Bearer ${token}`)
+        .attach('file', Buffer.from('fake video content'), {
+          filename: 'recording.mp4',
+          contentType: 'Video/MP4',
+        })
+        .expect(201);
+
+      // The 201 above is the actual regression check — a case-sensitive
+      // allowlist would 400 this. `busboy` itself lower-cases the part's
+      // Content-Type by the time it reaches us, so the stored value isn't
+      // expected to preserve the client's original casing.
+      expect((response.body as MeetingFileBody).mimeType.toLowerCase()).toBe(
+        'video/mp4',
+      );
+    });
+
+    // Regression: a failure persisting metadata after the file was already
+    // written to disk used to leave the file orphaned (no DB row, no cleanup).
+    it('removes the disk file if persisting its metadata fails', async () => {
+      const { token } = await registerUserWithEmail();
+      const meetingId = await createMeeting(token);
+      const entriesBefore = readdirSync(storageDir).length;
+
+      const createSpy = jest
+        .spyOn(prisma.meetingFile, 'create')
+        .mockRejectedValueOnce(new Error('simulated DB failure'));
+
+      try {
+        await request(app.getHttpServer())
+          .post(`/meetings/${meetingId}/files`)
+          .set('Authorization', `Bearer ${token}`)
+          .attach('file', Buffer.from('fake video content'), {
+            filename: 'recording.mp4',
+            contentType: 'video/mp4',
+          })
+          .expect(500);
+      } finally {
+        createSpy.mockRestore();
+      }
+
+      expect(readdirSync(storageDir).length).toBe(entriesBefore);
+    });
   });
 });

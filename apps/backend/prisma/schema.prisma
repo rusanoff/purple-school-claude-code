@@ -50,7 +50,7 @@ model MeetingFile {
   uploadedBy   User     @relation(fields: [uploadedById], references: [id], onDelete: Cascade)
   filename     String // original filename, for display and Content-Disposition
   mimeType     String
-  size         Int // bytes
+  size         BigInt // bytes; BigInt (not Int) — audio/video recordings can exceed the ~2.1GB Int limit
   path         String // generated on-disk filename, not the original filename or an absolute path
   createdAt    DateTime @default(now())
 

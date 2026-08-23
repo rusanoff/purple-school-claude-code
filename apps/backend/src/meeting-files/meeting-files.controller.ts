@@ -4,7 +4,7 @@ import type { FastifyRequest } from 'fastify';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import type { AuthUser } from '../auth/interfaces/auth-user.interface';
-import { GetMeetingQuery } from '../meeting/queries/get-meeting.query';
+import { AssertMeetingAccessQuery } from '../meeting/queries/assert-meeting-access.query';
 import { UploadMeetingFileCommand } from './commands/upload-meeting-file.command';
 import { MeetingFileResponse } from './interfaces/meeting-file.interface';
 import { MeetingFileStorageService } from './storage/meeting-file-storage.service';
@@ -38,20 +38,28 @@ export class MeetingFilesController {
     // 404 for a non-existent meeting, 403 for one the caller can't access —
     // before the multipart body is even read off the wire.
     await this.queryBus.execute(
-      new GetMeetingQuery(user.userId, user.email, meetingId),
+      new AssertMeetingAccessQuery(user.userId, user.email, meetingId),
     );
 
     const saved = await this.storage.saveUploadedFile(request);
 
-    return this.commandBus.execute(
-      new UploadMeetingFileCommand(
-        meetingId,
-        user.userId,
-        saved.filename,
-        saved.mimeType,
-        saved.size,
-        saved.path,
-      ),
-    );
+    try {
+      return await this.commandBus.execute(
+        new UploadMeetingFileCommand(
+          meetingId,
+          user.userId,
+          saved.filename,
+          saved.mimeType,
+          saved.size,
+          saved.path,
+        ),
+      );
+    } catch (error) {
+      // The file is already on disk at this point — if persisting its
+      // metadata fails, remove it rather than leaving an orphaned file with
+      // no corresponding MeetingFile row.
+      await this.storage.deleteFile(saved.path);
+      throw error;
+    }
   }
 }

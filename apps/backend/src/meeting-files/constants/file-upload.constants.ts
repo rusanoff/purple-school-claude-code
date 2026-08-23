@@ -19,19 +19,20 @@ const ALLOWED_DOCUMENT_MIME_TYPES = new Set([
 ]);
 
 export function isAllowedMimeType(mimeType: string): boolean {
+  // MIME type tokens are case-insensitive (RFC 2045/6838) — a client
+  // sending e.g. "Video/MP4" must match "video/mp4" in the allowlist.
+  const normalized = mimeType.toLowerCase();
   return (
-    ALLOWED_MIME_PREFIXES.some((prefix) => mimeType.startsWith(prefix)) ||
-    ALLOWED_DOCUMENT_MIME_TYPES.has(mimeType)
+    ALLOWED_MIME_PREFIXES.some((prefix) => normalized.startsWith(prefix)) ||
+    ALLOWED_DOCUMENT_MIME_TYPES.has(normalized)
   );
 }
 
 /**
- * Hard backstop passed to `@fastify/multipart` at plugin-registration time
- * (see `src/multipart.ts`). Deliberately unrelated to — and much larger
- * than — the actual business max-size: that one is enforced per-request in
- * `MeetingFileStorageService` from `FILE_MAX_SIZE_BYTES`, so it can be
- * configured (or overridden per e2e test) without re-registering the
- * plugin. This constant only protects the process from a pathologically
- * huge request body.
+ * Default passed to `@fastify/multipart` at plugin-registration time (see
+ * `src/multipart.ts`) — only a fallback for any future route that doesn't
+ * pass its own per-call `limits.fileSize`. `MeetingFileStorageService`
+ * always does (from `FILE_MAX_SIZE_BYTES`), so for this feature's own
+ * upload route this value is never actually the effective limit.
  */
 export const MULTIPART_PLUGIN_FILE_SIZE_LIMIT_BYTES = 1024 * 1024 * 1024; // 1GB
