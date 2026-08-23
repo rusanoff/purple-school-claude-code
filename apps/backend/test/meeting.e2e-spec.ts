@@ -1,6 +1,7 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { INestApplication } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
+import { FastifyAdapter } from '@nestjs/platform-fastify';
 import request from 'supertest';
 import { App } from 'supertest/types';
 import { randomUUID } from 'crypto';
@@ -45,8 +46,13 @@ describe('Meeting (e2e)', () => {
       imports: [AppModule],
     }).compile();
 
-    app = moduleFixture.createNestApplication();
+    const adapter = new FastifyAdapter();
+    app = moduleFixture.createNestApplication(adapter);
     await app.init();
+    // Fastify finishes registering routes/plugins asynchronously — supertest
+    // needs the adapter's underlying instance to be ready before requests
+    // against app.getHttpServer() are guaranteed to hit registered routes.
+    await adapter.getInstance().ready();
   });
 
   afterAll(async () => {
