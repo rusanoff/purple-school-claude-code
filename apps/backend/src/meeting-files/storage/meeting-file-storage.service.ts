@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { createWriteStream } from 'node:fs';
+import { createReadStream, createWriteStream, type ReadStream } from 'node:fs';
 import { mkdir, rm, stat } from 'node:fs/promises';
 import { extname, join, resolve } from 'node:path';
 import { pipeline } from 'node:stream/promises';
@@ -111,6 +111,14 @@ export class MeetingFileStorageService implements OnModuleInit {
       size,
       path: diskFilename,
     };
+  }
+
+  /** Opens a readable stream for a previously saved file, addressed by its
+   * on-disk filename (never the client-supplied name) — used by the
+   * download route to stream bytes back without buffering the whole file
+   * in memory. */
+  createReadStream(diskFilename: string): ReadStream {
+    return createReadStream(join(this.storageDir, diskFilename));
   }
 
   /** Removes a previously saved file — used to undo `saveUploadedFile` when
