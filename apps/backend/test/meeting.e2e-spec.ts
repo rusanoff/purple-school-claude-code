@@ -95,6 +95,12 @@ describe('Meeting (e2e)', () => {
         .expect(401);
     });
 
+    it('rejects an unauthenticated DELETE /meetings/:id', async () => {
+      await request(app.getHttpServer())
+        .delete(`/meetings/${randomUUID()}`)
+        .expect(401);
+    });
+
     it('rejects an Authorization header without the Bearer scheme', async () => {
       const token = await registerUser();
 
@@ -448,6 +454,80 @@ describe('Meeting (e2e)', () => {
         id: (created.body as MeetingBody).id,
         ...payload,
       });
+    });
+  });
+
+  // тест #4
+  describe('DELETE /meetings/:id', () => {
+    it('lets the owner delete their meeting', async () => {
+      const token = await registerUser();
+
+      const created = await request(app.getHttpServer())
+        .post('/meetings')
+        .set('Authorization', `Bearer ${token}`)
+        .send(sampleMeeting())
+        .expect(201);
+      const createdId = (created.body as MeetingBody).id;
+
+      await request(app.getHttpServer())
+        .delete(`/meetings/${createdId}`)
+        .set('Authorization', `Bearer ${token}`)
+        .expect(204);
+
+      await request(app.getHttpServer())
+        .get(`/meetings/${createdId}`)
+        .set('Authorization', `Bearer ${token}`)
+        .expect(404);
+    });
+
+    it('returns 404 when the meeting does not exist', async () => {
+      const token = await registerUser();
+
+      await request(app.getHttpServer())
+        .delete(`/meetings/${randomUUID()}`)
+        .set('Authorization', `Bearer ${token}`)
+        .expect(404);
+    });
+
+    it('rejects a participant — only the owner can delete a meeting', async () => {
+      const ownerToken = await registerUser();
+      const { email: participantEmail, token: participantToken } =
+        await registerUserWithEmail();
+
+      const created = await request(app.getHttpServer())
+        .post('/meetings')
+        .set('Authorization', `Bearer ${ownerToken}`)
+        .send({ ...sampleMeeting(), participants: [participantEmail] })
+        .expect(201);
+      const createdId = (created.body as MeetingBody).id;
+
+      await request(app.getHttpServer())
+        .delete(`/meetings/${createdId}`)
+        .set('Authorization', `Bearer ${participantToken}`)
+        .expect(403);
+
+      // Untouched — the owner can still fetch it afterwards.
+      await request(app.getHttpServer())
+        .get(`/meetings/${createdId}`)
+        .set('Authorization', `Bearer ${ownerToken}`)
+        .expect(200);
+    });
+
+    it('rejects a stranger — neither owner nor participant', async () => {
+      const ownerToken = await registerUser();
+      const strangerToken = await registerUser();
+
+      const created = await request(app.getHttpServer())
+        .post('/meetings')
+        .set('Authorization', `Bearer ${ownerToken}`)
+        .send(sampleMeeting())
+        .expect(201);
+      const createdId = (created.body as MeetingBody).id;
+
+      await request(app.getHttpServer())
+        .delete(`/meetings/${createdId}`)
+        .set('Authorization', `Bearer ${strangerToken}`)
+        .expect(403);
     });
   });
 });

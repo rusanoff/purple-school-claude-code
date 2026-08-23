@@ -82,6 +82,30 @@ describe('Meeting files (e2e)', () => {
     return (response.body as MeetingBody).id;
   }
 
+  /** Uploads a file to a meeting and returns the created row's response body
+   * — shared setup for the list/download/delete tests below, which all need
+   * an already-uploaded file to act on. */
+  async function uploadFile(
+    token: string,
+    meetingId: string,
+    overrides: {
+      filename?: string;
+      contentType?: string;
+      content?: string;
+    } = {},
+  ): Promise<MeetingFileBody> {
+    const response = await request(app.getHttpServer())
+      .post(`/meetings/${meetingId}/files`)
+      .set('Authorization', `Bearer ${token}`)
+      .attach('file', Buffer.from(overrides.content ?? 'fake video content'), {
+        filename: overrides.filename ?? 'recording.mp4',
+        contentType: overrides.contentType ?? 'video/mp4',
+      })
+      .expect(201);
+
+    return response.body as MeetingFileBody;
+  }
+
   beforeAll(async () => {
     // Isolated temp storage dir + a small size limit, both read by
     // MeetingFileStorageService's constructor — set before the module is
@@ -304,6 +328,298 @@ describe('Meeting files (e2e)', () => {
       }
 
       expect(readdirSync(storageDir).length).toBe(entriesBefore);
+    });
+  });
+
+  // тест #2
+  describe('GET /meetings/:meetingId/files', () => {
+    it('rejects an unauthenticated request', async () => {
+      const { token } = await registerUserWithEmail();
+      const meetingId = await createMeeting(token);
+
+      await request(app.getHttpServer())
+        .get(`/meetings/${meetingId}/files`)
+        .expect(401);
+    });
+
+    it('lists an uploaded file with its metadata for the owner', async () => {
+      const { token } = await registerUserWithEmail();
+      const meetingId = await createMeeting(token);
+      const uploaded = await uploadFile(token, meetingId);
+
+      const response = await request(app.getHttpServer())
+        .get(`/meetings/${meetingId}/files`)
+        .set('Authorization', `Bearer ${token}`)
+        .expect(200);
+
+      const body = response.body as MeetingFileBody[];
+      expect(body).toHaveLength(1);
+      expect(body[0]).toEqual(uploaded);
+    });
+
+    it('is visible to a participant, not just the owner', async () => {
+      const { token: ownerToken } = await registerUserWithEmail();
+      const { email: participantEmail, token: participantToken } =
+        await registerUserWithEmail();
+      const meetingId = await createMeeting(ownerToken, [participantEmail]);
+      await uploadFile(ownerToken, meetingId);
+
+      const response = await request(app.getHttpServer())
+        .get(`/meetings/${meetingId}/files`)
+        .set('Authorization', `Bearer ${participantToken}`)
+        .expect(200);
+
+      expect(response.body as MeetingFileBody[]).toHaveLength(1);
+    });
+
+    it('rejects someone who is neither owner nor participant', async () => {
+      const { token: ownerToken } = await registerUserWithEmail();
+      const { token: strangerToken } = await registerUserWithEmail();
+      const meetingId = await createMeeting(ownerToken);
+
+      await request(app.getHttpServer())
+        .get(`/meetings/${meetingId}/files`)
+        .set('Authorization', `Bearer ${strangerToken}`)
+        .expect(403);
+    });
+
+    it('returns 404 for a non-existent meeting', async () => {
+      const { token } = await registerUserWithEmail();
+
+      await request(app.getHttpServer())
+        .get(`/meetings/${randomUUID()}/files`)
+        .set('Authorization', `Bearer ${token}`)
+        .expect(404);
+    });
+
+    it('returns an empty list when no files have been uploaded', async () => {
+      const { token } = await registerUserWithEmail();
+      const meetingId = await createMeeting(token);
+
+      const response = await request(app.getHttpServer())
+        .get(`/meetings/${meetingId}/files`)
+        .set('Authorization', `Bearer ${token}`)
+        .expect(200);
+
+      expect(response.body).toEqual([]);
+    });
+
+    it('does not leak files belonging to another meeting', async () => {
+      const { token } = await registerUserWithEmail();
+      const meetingIdA = await createMeeting(token);
+      const meetingIdB = await createMeeting(token);
+      await uploadFile(token, meetingIdA);
+
+      const response = await request(app.getHttpServer())
+        .get(`/meetings/${meetingIdB}/files`)
+        .set('Authorization', `Bearer ${token}`)
+        .expect(200);
+
+      expect(response.body).toEqual([]);
+    });
+  });
+
+  // тест #3
+  describe('GET /meetings/:meetingId/files/:fileId', () => {
+    it('rejects an unauthenticated request', async () => {
+      const { token } = await registerUserWithEmail();
+      const meetingId = await createMeeting(token);
+      const file = await uploadFile(token, meetingId);
+
+      await request(app.getHttpServer())
+        .get(`/meetings/${meetingId}/files/${file.id}`)
+        .expect(401);
+    });
+
+    it('streams the file back to the owner with the right content and headers', async () => {
+      const { token } = await registerUserWithEmail();
+      const meetingId = await createMeeting(token);
+      const content = 'plain text file content';
+      const file = await uploadFile(token, meetingId, {
+        content,
+        filename: 'notes.txt',
+        contentType: 'text/plain',
+      });
+
+      const response = await request(app.getHttpServer())
+        .get(`/meetings/${meetingId}/files/${file.id}`)
+        .set('Authorization', `Bearer ${token}`)
+        .expect(200);
+
+      expect(response.headers['content-type']).toContain('text/plain');
+      expect(response.headers['content-disposition']).toContain('notes.txt');
+      expect(response.text).toBe(content);
+    });
+
+    it('lets a participant download the file', async () => {
+      const { token: ownerToken } = await registerUserWithEmail();
+      const { email: participantEmail, token: participantToken } =
+        await registerUserWithEmail();
+      const meetingId = await createMeeting(ownerToken, [participantEmail]);
+      const file = await uploadFile(ownerToken, meetingId);
+
+      await request(app.getHttpServer())
+        .get(`/meetings/${meetingId}/files/${file.id}`)
+        .set('Authorization', `Bearer ${participantToken}`)
+        .expect(200);
+    });
+
+    it('rejects someone who is neither owner nor participant', async () => {
+      const { token: ownerToken } = await registerUserWithEmail();
+      const { token: strangerToken } = await registerUserWithEmail();
+      const meetingId = await createMeeting(ownerToken);
+      const file = await uploadFile(ownerToken, meetingId);
+
+      await request(app.getHttpServer())
+        .get(`/meetings/${meetingId}/files/${file.id}`)
+        .set('Authorization', `Bearer ${strangerToken}`)
+        .expect(403);
+    });
+
+    it('returns 404 for a non-existent meeting', async () => {
+      const { token } = await registerUserWithEmail();
+
+      await request(app.getHttpServer())
+        .get(`/meetings/${randomUUID()}/files/${randomUUID()}`)
+        .set('Authorization', `Bearer ${token}`)
+        .expect(404);
+    });
+
+    it('returns 404 for a file that does not belong to the meeting', async () => {
+      const { token } = await registerUserWithEmail();
+      const meetingIdA = await createMeeting(token);
+      const meetingIdB = await createMeeting(token);
+      const file = await uploadFile(token, meetingIdA);
+
+      await request(app.getHttpServer())
+        .get(`/meetings/${meetingIdB}/files/${file.id}`)
+        .set('Authorization', `Bearer ${token}`)
+        .expect(404);
+    });
+  });
+
+  // тест #4
+  describe('DELETE /meetings/:meetingId/files/:fileId', () => {
+    it('rejects an unauthenticated request', async () => {
+      const { token } = await registerUserWithEmail();
+      const meetingId = await createMeeting(token);
+      const file = await uploadFile(token, meetingId);
+
+      await request(app.getHttpServer())
+        .delete(`/meetings/${meetingId}/files/${file.id}`)
+        .expect(401);
+    });
+
+    it('lets the owner delete their own file, removing the DB row and the disk file', async () => {
+      const { token } = await registerUserWithEmail();
+      const meetingId = await createMeeting(token);
+      const file = await uploadFile(token, meetingId);
+      const row = await prisma.meetingFile.findUnique({
+        where: { id: file.id },
+      });
+
+      await request(app.getHttpServer())
+        .delete(`/meetings/${meetingId}/files/${file.id}`)
+        .set('Authorization', `Bearer ${token}`)
+        .expect(204);
+
+      expect(
+        await prisma.meetingFile.findUnique({ where: { id: file.id } }),
+      ).toBeNull();
+      expect(existsSync(join(storageDir, row!.path))).toBe(false);
+    });
+
+    it('lets the owner delete a file uploaded by a participant', async () => {
+      const { token: ownerToken } = await registerUserWithEmail();
+      const { email: participantEmail, token: participantToken } =
+        await registerUserWithEmail();
+      const meetingId = await createMeeting(ownerToken, [participantEmail]);
+      const file = await uploadFile(participantToken, meetingId);
+
+      await request(app.getHttpServer())
+        .delete(`/meetings/${meetingId}/files/${file.id}`)
+        .set('Authorization', `Bearer ${ownerToken}`)
+        .expect(204);
+
+      expect(
+        await prisma.meetingFile.findUnique({ where: { id: file.id } }),
+      ).toBeNull();
+    });
+
+    it('lets a participant delete a file they uploaded themselves', async () => {
+      const { token: ownerToken } = await registerUserWithEmail();
+      const { email: participantEmail, token: participantToken } =
+        await registerUserWithEmail();
+      const meetingId = await createMeeting(ownerToken, [participantEmail]);
+      const file = await uploadFile(participantToken, meetingId);
+
+      await request(app.getHttpServer())
+        .delete(`/meetings/${meetingId}/files/${file.id}`)
+        .set('Authorization', `Bearer ${participantToken}`)
+        .expect(204);
+    });
+
+    it('rejects a participant deleting a file they did not upload', async () => {
+      const { token: ownerToken } = await registerUserWithEmail();
+      const { email: participantEmail, token: participantToken } =
+        await registerUserWithEmail();
+      const meetingId = await createMeeting(ownerToken, [participantEmail]);
+      const file = await uploadFile(ownerToken, meetingId);
+
+      await request(app.getHttpServer())
+        .delete(`/meetings/${meetingId}/files/${file.id}`)
+        .set('Authorization', `Bearer ${participantToken}`)
+        .expect(403);
+
+      expect(
+        await prisma.meetingFile.findUnique({ where: { id: file.id } }),
+      ).not.toBeNull();
+    });
+
+    it('rejects someone who is neither owner nor participant', async () => {
+      const { token: ownerToken } = await registerUserWithEmail();
+      const { token: strangerToken } = await registerUserWithEmail();
+      const meetingId = await createMeeting(ownerToken);
+      const file = await uploadFile(ownerToken, meetingId);
+
+      await request(app.getHttpServer())
+        .delete(`/meetings/${meetingId}/files/${file.id}`)
+        .set('Authorization', `Bearer ${strangerToken}`)
+        .expect(403);
+    });
+
+    it('returns 404 for a file that does not belong to the meeting', async () => {
+      const { token } = await registerUserWithEmail();
+      const meetingIdA = await createMeeting(token);
+      const meetingIdB = await createMeeting(token);
+      const file = await uploadFile(token, meetingIdA);
+
+      await request(app.getHttpServer())
+        .delete(`/meetings/${meetingIdB}/files/${file.id}`)
+        .set('Authorization', `Bearer ${token}`)
+        .expect(404);
+    });
+  });
+
+  // тест #5
+  describe('DELETE /meetings/:id (cascade file cleanup)', () => {
+    it('removes uploaded files from disk when their meeting is deleted', async () => {
+      const { token } = await registerUserWithEmail();
+      const meetingId = await createMeeting(token);
+      const file = await uploadFile(token, meetingId);
+      const row = await prisma.meetingFile.findUnique({
+        where: { id: file.id },
+      });
+
+      await request(app.getHttpServer())
+        .delete(`/meetings/${meetingId}`)
+        .set('Authorization', `Bearer ${token}`)
+        .expect(204);
+
+      expect(
+        await prisma.meetingFile.findMany({ where: { meetingId } }),
+      ).toHaveLength(0);
+      expect(existsSync(join(storageDir, row!.path))).toBe(false);
     });
   });
 });
