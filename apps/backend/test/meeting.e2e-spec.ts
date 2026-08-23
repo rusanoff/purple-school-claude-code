@@ -41,6 +41,24 @@ describe('Meeting (e2e)', () => {
     return (response.body as { accessToken: string }).accessToken;
   }
 
+  /** Registers a fresh user and returns both their email and bearer token —
+   * for tests that need the email to list the user as a meeting participant. */
+  async function registerUserWithEmail(): Promise<{
+    email: string;
+    token: string;
+  }> {
+    const email = uniqueEmail();
+    const response = await request(app.getHttpServer())
+      .post('/auth/register')
+      .send({ email, password: PASSWORD })
+      .expect(201);
+
+    return {
+      email,
+      token: (response.body as { accessToken: string }).accessToken,
+    };
+  }
+
   beforeAll(async () => {
     const moduleFixture: TestingModule = await Test.createTestingModule({
       imports: [AppModule],
@@ -362,20 +380,8 @@ describe('Meeting (e2e)', () => {
 
     it('returns the meeting for a participant, not just its owner', async () => {
       const ownerToken = await registerUser();
-      const participantEmail = uniqueEmail();
-      const participantPassword = PASSWORD;
-
-      await request(app.getHttpServer())
-        .post('/auth/register')
-        .send({ email: participantEmail, password: participantPassword })
-        .expect(201);
-      const participantLogin = await request(app.getHttpServer())
-        .post('/auth/login')
-        .send({ email: participantEmail, password: participantPassword })
-        .expect(200);
-      const participantToken = (
-        participantLogin.body as { accessToken: string }
-      ).accessToken;
+      const { email: participantEmail, token: participantToken } =
+        await registerUserWithEmail();
 
       const created = await request(app.getHttpServer())
         .post('/meetings')
@@ -394,19 +400,8 @@ describe('Meeting (e2e)', () => {
 
     it('matches participant email case-insensitively', async () => {
       const ownerToken = await registerUser();
-      const participantEmail = uniqueEmail();
-
-      await request(app.getHttpServer())
-        .post('/auth/register')
-        .send({ email: participantEmail, password: PASSWORD })
-        .expect(201);
-      const participantLogin = await request(app.getHttpServer())
-        .post('/auth/login')
-        .send({ email: participantEmail, password: PASSWORD })
-        .expect(200);
-      const participantToken = (
-        participantLogin.body as { accessToken: string }
-      ).accessToken;
+      const { email: participantEmail, token: participantToken } =
+        await registerUserWithEmail();
 
       const created = await request(app.getHttpServer())
         .post('/meetings')
