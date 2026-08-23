@@ -340,7 +340,7 @@ describe('Meeting (e2e)', () => {
         .expect(404);
     });
 
-    it('returns 404 when the meeting belongs to another user', async () => {
+    it('returns 403 when the meeting exists but the caller is neither owner nor participant', async () => {
       const ownerToken = await registerUser();
       const otherToken = await registerUser();
 
@@ -351,10 +351,77 @@ describe('Meeting (e2e)', () => {
         .expect(201);
       const createdId = (created.body as MeetingBody).id;
 
+      // The meeting exists — unlike a genuinely missing id, this must not
+      // collapse to 404, since owner-or-participant access is now checked
+      // separately from existence.
       await request(app.getHttpServer())
         .get(`/meetings/${createdId}`)
         .set('Authorization', `Bearer ${otherToken}`)
-        .expect(404);
+        .expect(403);
+    });
+
+    it('returns the meeting for a participant, not just its owner', async () => {
+      const ownerToken = await registerUser();
+      const participantEmail = uniqueEmail();
+      const participantPassword = PASSWORD;
+
+      await request(app.getHttpServer())
+        .post('/auth/register')
+        .send({ email: participantEmail, password: participantPassword })
+        .expect(201);
+      const participantLogin = await request(app.getHttpServer())
+        .post('/auth/login')
+        .send({ email: participantEmail, password: participantPassword })
+        .expect(200);
+      const participantToken = (
+        participantLogin.body as { accessToken: string }
+      ).accessToken;
+
+      const created = await request(app.getHttpServer())
+        .post('/meetings')
+        .set('Authorization', `Bearer ${ownerToken}`)
+        .send({ ...sampleMeeting(), participants: [participantEmail] })
+        .expect(201);
+      const createdId = (created.body as MeetingBody).id;
+
+      const response = await request(app.getHttpServer())
+        .get(`/meetings/${createdId}`)
+        .set('Authorization', `Bearer ${participantToken}`)
+        .expect(200);
+
+      expect((response.body as MeetingBody).id).toBe(createdId);
+    });
+
+    it('matches participant email case-insensitively', async () => {
+      const ownerToken = await registerUser();
+      const participantEmail = uniqueEmail();
+
+      await request(app.getHttpServer())
+        .post('/auth/register')
+        .send({ email: participantEmail, password: PASSWORD })
+        .expect(201);
+      const participantLogin = await request(app.getHttpServer())
+        .post('/auth/login')
+        .send({ email: participantEmail, password: PASSWORD })
+        .expect(200);
+      const participantToken = (
+        participantLogin.body as { accessToken: string }
+      ).accessToken;
+
+      const created = await request(app.getHttpServer())
+        .post('/meetings')
+        .set('Authorization', `Bearer ${ownerToken}`)
+        .send({
+          ...sampleMeeting(),
+          participants: [participantEmail.toUpperCase()],
+        })
+        .expect(201);
+      const createdId = (created.body as MeetingBody).id;
+
+      await request(app.getHttpServer())
+        .get(`/meetings/${createdId}`)
+        .set('Authorization', `Bearer ${participantToken}`)
+        .expect(200);
     });
 
     it('returns 404 — not 500 — for an id that is not a UUID', async () => {
