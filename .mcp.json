@@ -3,8 +3,15 @@
     "playwright": {
       "type": "stdio",
       "command": "npx",
-      "args": ["@playwright/mcp@latest", "--isolated"],
+      "args": [
+        "@playwright/mcp@latest",
+        "--isolated"
+      ],
       "env": {}
+    },
+    "webstorm": {
+      "url": "http://127.0.0.1:64542/stream",
+      "type": "http"
     }
   }
 }

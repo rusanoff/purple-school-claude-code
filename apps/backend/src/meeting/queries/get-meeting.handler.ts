@@ -1,6 +1,7 @@
 import { NotFoundException } from '@nestjs/common';
 import { IQueryHandler, QueryHandler } from '@nestjs/cqrs';
 import { PrismaService } from '../../prisma/prisma.service';
+import { assertMeetingAccess } from '../access/meeting-access';
 import {
   MeetingResponse,
   toMeetingResponse,
@@ -11,16 +12,21 @@ import { GetMeetingQuery } from './get-meeting.query';
 export class GetMeetingHandler implements IQueryHandler<GetMeetingQuery> {
   constructor(private readonly prisma: PrismaService) {}
 
-  async execute({ ownerId, id }: GetMeetingQuery): Promise<MeetingResponse> {
-    // Scoping by ownerId means another user's meeting is indistinguishable
-    // from a non-existent one — both surface as 404, never 403.
-    const meeting = await this.prisma.meeting.findFirst({
-      where: { id, ownerId },
-    });
+  async execute({
+    userId,
+    email,
+    id,
+  }: GetMeetingQuery): Promise<MeetingResponse> {
+    // Looked up by id alone (not scoped to ownerId) — a non-existent meeting
+    // still 404s, but an existing one the caller can't access 403s via
+    // assertMeetingAccess below, instead of both cases collapsing to 404.
+    const meeting = await this.prisma.meeting.findUnique({ where: { id } });
 
     if (!meeting) {
       throw new NotFoundException('Meeting not found');
     }
+
+    assertMeetingAccess(meeting, { userId, email });
 
     return toMeetingResponse(meeting);
   }

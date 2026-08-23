@@ -37,6 +37,8 @@ export class MeetingController {
     @CurrentUser() user: AuthUser,
     @Param('id') id: string,
   ): Promise<MeetingResponse> {
-    return this.queryBus.execute(new GetMeetingQuery(user.userId, id));
+    return this.queryBus.execute(
+      new GetMeetingQuery(user.userId, user.email, id),
+    );
   }
 }

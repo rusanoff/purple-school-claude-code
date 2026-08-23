@@ -5,7 +5,7 @@ import {
   UnauthorizedException,
 } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
-import { Request } from 'express';
+import { FastifyRequest } from 'fastify';
 import { AuthUser } from '../interfaces/auth-user.interface';
 
 interface JwtPayload {
@@ -23,7 +23,7 @@ export class JwtAuthGuard implements CanActivate {
   constructor(private readonly jwtService: JwtService) {}
 
   async canActivate(context: ExecutionContext): Promise<boolean> {
-    const request = context.switchToHttp().getRequest<Request>();
+    const request = context.switchToHttp().getRequest<FastifyRequest>();
     const header = request.headers.authorization;
 
     if (!header?.startsWith('Bearer ')) {
@@ -35,7 +35,7 @@ export class JwtAuthGuard implements CanActivate {
         header.slice('Bearer '.length),
       );
       const user: AuthUser = { userId: payload.sub, email: payload.email };
-      (request as Request & { user: AuthUser }).user = user;
+      (request as FastifyRequest & { user: AuthUser }).user = user;
       return true;
     } catch {
       throw new UnauthorizedException('Invalid or expired token');

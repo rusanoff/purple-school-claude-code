@@ -1,6 +1,7 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { INestApplication } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
+import { FastifyAdapter } from '@nestjs/platform-fastify';
 import request from 'supertest';
 import { App } from 'supertest/types';
 import { randomUUID } from 'crypto';
@@ -40,13 +41,36 @@ describe('Meeting (e2e)', () => {
     return (response.body as { accessToken: string }).accessToken;
   }
 
+  /** Registers a fresh user and returns both their email and bearer token —
+   * for tests that need the email to list the user as a meeting participant. */
+  async function registerUserWithEmail(): Promise<{
+    email: string;
+    token: string;
+  }> {
+    const email = uniqueEmail();
+    const response = await request(app.getHttpServer())
+      .post('/auth/register')
+      .send({ email, password: PASSWORD })
+      .expect(201);
+
+    return {
+      email,
+      token: (response.body as { accessToken: string }).accessToken,
+    };
+  }
+
   beforeAll(async () => {
     const moduleFixture: TestingModule = await Test.createTestingModule({
       imports: [AppModule],
     }).compile();
 
-    app = moduleFixture.createNestApplication();
+    const adapter = new FastifyAdapter();
+    app = moduleFixture.createNestApplication(adapter);
     await app.init();
+    // Fastify finishes registering routes/plugins asynchronously — supertest
+    // needs the adapter's underlying instance to be ready before requests
+    // against app.getHttpServer() are guaranteed to hit registered routes.
+    await adapter.getInstance().ready();
   });
 
   afterAll(async () => {
@@ -334,7 +358,7 @@ describe('Meeting (e2e)', () => {
         .expect(404);
     });
 
-    it('returns 404 when the meeting belongs to another user', async () => {
+    it('returns 403 when the meeting exists but the caller is neither owner nor participant', async () => {
       const ownerToken = await registerUser();
       const otherToken = await registerUser();
 
@@ -345,10 +369,54 @@ describe('Meeting (e2e)', () => {
         .expect(201);
       const createdId = (created.body as MeetingBody).id;
 
+      // The meeting exists — unlike a genuinely missing id, this must not
+      // collapse to 404, since owner-or-participant access is now checked
+      // separately from existence.
       await request(app.getHttpServer())
         .get(`/meetings/${createdId}`)
         .set('Authorization', `Bearer ${otherToken}`)
-        .expect(404);
+        .expect(403);
+    });
+
+    it('returns the meeting for a participant, not just its owner', async () => {
+      const ownerToken = await registerUser();
+      const { email: participantEmail, token: participantToken } =
+        await registerUserWithEmail();
+
+      const created = await request(app.getHttpServer())
+        .post('/meetings')
+        .set('Authorization', `Bearer ${ownerToken}`)
+        .send({ ...sampleMeeting(), participants: [participantEmail] })
+        .expect(201);
+      const createdId = (created.body as MeetingBody).id;
+
+      const response = await request(app.getHttpServer())
+        .get(`/meetings/${createdId}`)
+        .set('Authorization', `Bearer ${participantToken}`)
+        .expect(200);
+
+      expect((response.body as MeetingBody).id).toBe(createdId);
+    });
+
+    it('matches participant email case-insensitively', async () => {
+      const ownerToken = await registerUser();
+      const { email: participantEmail, token: participantToken } =
+        await registerUserWithEmail();
+
+      const created = await request(app.getHttpServer())
+        .post('/meetings')
+        .set('Authorization', `Bearer ${ownerToken}`)
+        .send({
+          ...sampleMeeting(),
+          participants: [participantEmail.toUpperCase()],
+        })
+        .expect(201);
+      const createdId = (created.body as MeetingBody).id;
+
+      await request(app.getHttpServer())
+        .get(`/meetings/${createdId}`)
+        .set('Authorization', `Bearer ${participantToken}`)
+        .expect(200);
     });
 
     it('returns 404 — not 500 — for an id that is not a UUID', async () => {

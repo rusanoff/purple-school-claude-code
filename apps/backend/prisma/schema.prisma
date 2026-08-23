@@ -8,26 +8,52 @@ datasource db {
 }
 
 model User {
-  id           String    @id @default(uuid())
-  email        String    @unique
-  passwordHash String
-  createdAt    DateTime  @default(now())
-  updatedAt    DateTime  @updatedAt
-  meetings     Meeting[]
+  id            String        @id @default(uuid())
+  email         String        @unique
+  passwordHash  String
+  createdAt     DateTime      @default(now())
+  updatedAt     DateTime      @updatedAt
+  meetings      Meeting[]
+  uploadedFiles MeetingFile[]
 
   @@map("users")
 }
 
 model Meeting {
-  id           String   @id @default(uuid())
+  id           String        @id @default(uuid())
   title        String
   date         DateTime
   participants String[]
   ownerId      String
-  owner        User     @relation(fields: [ownerId], references: [id], onDelete: Cascade)
-  createdAt    DateTime @default(now())
-  updatedAt    DateTime @updatedAt
+  owner        User          @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+  createdAt    DateTime      @default(now())
+  updatedAt    DateTime      @updatedAt
+  files        MeetingFile[]
 
   @@index([ownerId])
   @@map("meetings")
+}
+
+model MeetingFile {
+  id           String   @id @default(uuid())
+  meetingId    String
+  // A meeting's files are inherently meeting-scoped data — deleting the
+  // meeting must delete its files' metadata too (the disk files themselves
+  // are removed explicitly by the delete-meeting handler before this row
+  // disappears, since a DB cascade can't reach the filesystem).
+  meeting      Meeting  @relation(fields: [meetingId], references: [id], onDelete: Cascade)
+  uploadedById String
+  // Cascade here means deleting a user account would delete files they
+  // uploaded to meetings they may no longer even own/participate in, which
+  // is a real trade-off (see docs/research-meeting-upload.md) — accepted for
+  // now because the app has no user-deletion feature yet to make it bite.
+  uploadedBy   User     @relation(fields: [uploadedById], references: [id], onDelete: Cascade)
+  filename     String // original filename, for display and Content-Disposition
+  mimeType     String
+  size         BigInt // bytes; BigInt (not Int) — audio/video recordings can exceed the ~2.1GB Int limit
+  path         String // generated on-disk filename, not the original filename or an absolute path
+  createdAt    DateTime @default(now())
+
+  @@index([meetingId])
+  @@map("meeting_files")
 }
