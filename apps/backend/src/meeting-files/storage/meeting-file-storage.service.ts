@@ -121,6 +121,22 @@ export class MeetingFileStorageService implements OnModuleInit {
     return createReadStream(join(this.storageDir, diskFilename));
   }
 
+  /** True if a previously saved file still exists on disk. Used by the
+   * download route to 404 cleanly instead of letting a concurrent delete
+   * (another request's DELETE .../files/:fileId or DELETE /meetings/:id
+   * racing this one, after the DB row was already read) surface as a raw,
+   * unhandled stream error — `@Res()` routes bypass Nest's exception zone
+   * for anything thrown after headers start streaming, so this check has
+   * to happen *before* `createReadStream()`/`reply.send()`, not after. */
+  async fileExists(diskFilename: string): Promise<boolean> {
+    try {
+      await stat(join(this.storageDir, diskFilename));
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
   /** Removes a previously saved file — used to undo `saveUploadedFile` when
    * a step after it (e.g. persisting metadata) fails, so a rejected upload
    * never leaves an orphaned file behind. */

@@ -464,6 +464,28 @@ describe('Meeting files (e2e)', () => {
         .expect(200);
     });
 
+    // Regression: a non-ASCII filename placed verbatim in the quoted
+    // Content-Disposition `filename` parameter used to throw
+    // ERR_INVALID_CHAR (HTTP header values are Latin-1-only), 500ing every
+    // download of such a file.
+    it('downloads a file whose original filename has non-ASCII characters', async () => {
+      const { token } = await registerUserWithEmail();
+      const meetingId = await createMeeting(token);
+      const file = await uploadFile(token, meetingId, {
+        filename: 'протокол встречи.pdf',
+        contentType: 'application/pdf',
+      });
+
+      const response = await request(app.getHttpServer())
+        .get(`/meetings/${meetingId}/files/${file.id}`)
+        .set('Authorization', `Bearer ${token}`)
+        .expect(200);
+
+      expect(response.headers['content-disposition']).toContain(
+        "filename*=UTF-8''%D0%BF%D1%80%D0%BE%D1%82%D0%BE%D0%BA%D0%BE%D0%BB%20%D0%B2%D1%81%D1%82%D1%80%D0%B5%D1%87%D0%B8.pdf",
+      );
+    });
+
     it('rejects someone who is neither owner nor participant', async () => {
       const { token: ownerToken } = await registerUserWithEmail();
       const { token: strangerToken } = await registerUserWithEmail();

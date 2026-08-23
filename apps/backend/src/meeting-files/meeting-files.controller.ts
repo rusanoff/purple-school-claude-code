@@ -3,6 +3,7 @@ import {
   Delete,
   Get,
   HttpCode,
+  NotFoundException,
   Param,
   Post,
   Req,
@@ -15,6 +16,7 @@ import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import type { AuthUser } from '../auth/interfaces/auth-user.interface';
 import { AssertMeetingAccessQuery } from '../meeting/queries/assert-meeting-access.query';
+import { isPrismaError } from '../prisma/prisma-error.util';
 import { DeleteMeetingFileCommand } from './commands/delete-meeting-file.command';
 import { UploadMeetingFileCommand } from './commands/upload-meeting-file.command';
 import { MeetingFileResponse } from './interfaces/meeting-file.interface';
@@ -75,6 +77,17 @@ export class MeetingFilesController {
       // metadata fails, remove it rather than leaving an orphaned file with
       // no corresponding MeetingFile row.
       await this.storage.deleteFile(saved.path);
+
+      // The meeting can be deleted by its owner in the window between the
+      // access check above and this insert — the access check passed
+      // against a meeting that no longer exists by the time
+      // meetingFile.create() runs, which fails the FK constraint on
+      // meetingId (P2003) rather than a plain DB error. Surfaced as the
+      // same 404 a retry would see, instead of a raw 500 that doesn't
+      // explain what actually happened.
+      if (isPrismaError(error, 'P2003')) {
+        throw new NotFoundException('Meeting not found');
+      }
       throw error;
     }
   }
@@ -105,6 +118,16 @@ export class MeetingFilesController {
     const file = await this.queryBus.execute(
       new GetMeetingFileQuery(meetingId, fileId),
     );
+
+    // A concurrent DELETE (of this file, or of the whole meeting) can win
+    // the race between the DB read above and opening the stream below —
+    // checked explicitly, and *before* `reply.send()`, because a raw
+    // stream error past that point wouldn't go through Nest's exception
+    // zone (this route uses `@Res()`) and would surface as an unhandled
+    // 500 instead of a clean 404.
+    if (!(await this.storage.fileExists(file.path))) {
+      throw new NotFoundException('File not found');
+    }
 
     reply
       .header('Content-Disposition', contentDisposition(file.filename))
@@ -137,10 +160,15 @@ export class MeetingFilesController {
  * Builds a `Content-Disposition` header value from a client-supplied
  * filename. `filename` is user-controlled (the original upload name, never
  * sanitized beyond MIME/size checks) — CR/LF are stripped to prevent header
- * injection, and a UTF-8 `filename*` parameter (RFC 5987) is included
- * alongside the quoted-string `filename` so non-ASCII names still survive.
+ * injection. The quoted `filename` parameter is further restricted to a
+ * printable-ASCII fallback (any other byte becomes `_`): HTTP header values
+ * are Latin-1-only at the Node/Fastify level, so a Cyrillic/CJK/emoji name
+ * placed there verbatim throws `ERR_INVALID_CHAR` and 500s the whole
+ * download — the real name survives losslessly in the RFC 5987 `filename*`
+ * parameter alongside it, which every modern client prefers anyway.
  */
 function contentDisposition(filename: string): string {
-  const safe = filename.replace(/[\r\n"]/g, '');
-  return `attachment; filename="${safe}"; filename*=UTF-8''${encodeURIComponent(filename)}`;
+  const stripped = filename.replace(/[\r\n]/g, '');
+  const asciiFallback = stripped.replace(/[^\x20-\x7e]|["\\]/g, '_');
+  return `attachment; filename="${asciiFallback}"; filename*=UTF-8''${encodeURIComponent(stripped)}`;
 }

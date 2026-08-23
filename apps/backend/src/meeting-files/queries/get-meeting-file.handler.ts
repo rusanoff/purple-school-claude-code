@@ -1,10 +1,10 @@
-import { NotFoundException } from '@nestjs/common';
 import { IQueryHandler, QueryHandler } from '@nestjs/cqrs';
 import { PrismaService } from '../../prisma/prisma.service';
 import {
   MeetingFileRecord,
   toMeetingFileRecord,
 } from '../interfaces/meeting-file.interface';
+import { findMeetingFileOrThrow } from './find-meeting-file-or-throw';
 import { GetMeetingFileQuery } from './get-meeting-file.query';
 
 @QueryHandler(GetMeetingFileQuery)
@@ -15,16 +15,7 @@ export class GetMeetingFileHandler implements IQueryHandler<GetMeetingFileQuery>
     meetingId,
     fileId,
   }: GetMeetingFileQuery): Promise<MeetingFileRecord> {
-    const file = await this.prisma.meetingFile.findUnique({
-      where: { id: fileId },
-    });
-
-    // A file that exists but belongs to a different meeting 404s the same
-    // as one that doesn't exist at all — the URL's :meetingId is a scope,
-    // not just a label, so it must not leak "this file exists elsewhere".
-    if (!file || file.meetingId !== meetingId) {
-      throw new NotFoundException('File not found');
-    }
+    const file = await findMeetingFileOrThrow(this.prisma, meetingId, fileId);
 
     return toMeetingFileRecord(file);
   }
