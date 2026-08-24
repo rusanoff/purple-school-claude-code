@@ -1,9 +1,19 @@
-import { Body, Controller, Get, Param, Post, UseGuards } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Delete,
+  Get,
+  HttpCode,
+  Param,
+  Post,
+  UseGuards,
+} from '@nestjs/common';
 import { CommandBus, QueryBus } from '@nestjs/cqrs';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import type { AuthUser } from '../auth/interfaces/auth-user.interface';
 import { CreateMeetingCommand } from './commands/create-meeting.command';
+import { DeleteMeetingCommand } from './commands/delete-meeting.command';
 import { CreateMeetingDto } from './dto/create-meeting.dto';
 import { MeetingResponse } from './interfaces/meeting.interface';
 import { GetMeetingQuery } from './queries/get-meeting.query';
@@ -40,5 +50,14 @@ export class MeetingController {
     return this.queryBus.execute(
       new GetMeetingQuery(user.userId, user.email, id),
     );
+  }
+
+  @Delete(':id')
+  @HttpCode(204)
+  remove(
+    @CurrentUser() user: AuthUser,
+    @Param('id') id: string,
+  ): Promise<void> {
+    return this.commandBus.execute(new DeleteMeetingCommand(user.userId, id));
   }
 }

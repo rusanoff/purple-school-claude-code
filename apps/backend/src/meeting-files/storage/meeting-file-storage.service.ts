@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { createWriteStream } from 'node:fs';
+import { createReadStream, createWriteStream, type ReadStream } from 'node:fs';
 import { mkdir, rm, stat } from 'node:fs/promises';
 import { extname, join, resolve } from 'node:path';
 import { pipeline } from 'node:stream/promises';
@@ -111,6 +111,30 @@ export class MeetingFileStorageService implements OnModuleInit {
       size,
       path: diskFilename,
     };
+  }
+
+  /** Opens a readable stream for a previously saved file, addressed by its
+   * on-disk filename (never the client-supplied name) — used by the
+   * download route to stream bytes back without buffering the whole file
+   * in memory. */
+  createReadStream(diskFilename: string): ReadStream {
+    return createReadStream(join(this.storageDir, diskFilename));
+  }
+
+  /** True if a previously saved file still exists on disk. Used by the
+   * download route to 404 cleanly instead of letting a concurrent delete
+   * (another request's DELETE .../files/:fileId or DELETE /meetings/:id
+   * racing this one, after the DB row was already read) surface as a raw,
+   * unhandled stream error — `@Res()` routes bypass Nest's exception zone
+   * for anything thrown after headers start streaming, so this check has
+   * to happen *before* `createReadStream()`/`reply.send()`, not after. */
+  async fileExists(diskFilename: string): Promise<boolean> {
+    try {
+      await stat(join(this.storageDir, diskFilename));
+      return true;
+    } catch {
+      return false;
+    }
   }
 
   /** Removes a previously saved file — used to undo `saveUploadedFile` when

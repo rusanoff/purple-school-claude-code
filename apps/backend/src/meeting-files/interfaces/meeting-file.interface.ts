@@ -27,3 +27,18 @@ export function toMeetingFileResponse(file: MeetingFile): MeetingFileResponse {
     createdAt: file.createdAt.toISOString(),
   };
 }
+
+/**
+ * Internal shape carrying the on-disk `path` — like `UserRecord` in
+ * `src/users/interfaces/`, this is a cross-handler message type, not an
+ * HTTP response shape. Used only by the download route (to address the file
+ * on disk and set `Content-Disposition`) and the delete flow; must never be
+ * serialized straight to a client the way `MeetingFileResponse` is.
+ */
+export interface MeetingFileRecord extends MeetingFileResponse {
+  path: string;
+}
+
+export function toMeetingFileRecord(file: MeetingFile): MeetingFileRecord {
+  return { ...toMeetingFileResponse(file), path: file.path };
+}
