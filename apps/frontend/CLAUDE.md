@@ -17,6 +17,44 @@ See also the root `CLAUDE.md` for monorepo-wide conventions (shared lint/format 
 - `app/meetings/[id]/page.tsx` is the meeting detail page — same client-only auth-gate shape as the dashboard (mount effect reads the token, redirects to `/login` if missing, otherwise calls `getMeeting`), read via `useParams<{ id: string }>()` since this is a client component (no server-side `params` Promise to unwrap). The fetch outcome is one `LoadResult` discriminated union (`success`/`forbidden`/`not-found`/`error`), not separate booleans — that's deliberate, see the type's doc comment: independent booleans let one catch branch set a state without clearing another, so two mutually-exclusive UI states could render at once after a retry that failed a _different_ way than the first attempt. The stored result is also tagged with the `meetingId` it was fetched for (`{ id, result }`), and the loading spinner renders whenever that tag doesn't match the current `meetingId` — since this page isn't remounted when navigating client-side between two different `/meetings/[id]` routes, without that check the previous meeting's content would stay on screen until the new fetch resolves. Response handling extends the dashboard's pattern: a 401 clears the token and redirects to `/login`, same as there; `forbidden`/`not-found` (the backend's owner-or-participant check, see the root `CLAUDE.md`) render one of two dedicated empty states instead of the generic error banner — "you don't have access" (`LockIcon`) for 403, "meeting not found" (`SearchOffIcon`) for 404, deliberately different icons so the two states don't read as identical. Anything else (network, 5xx) falls back to the dashboard's retry-able `Alert`; both this page's and the dashboard's Retry handler redirect to `/login` instead of silently no-op-ing if the token has gone missing since the last render (e.g. a logout in another tab). On success, renders title/date/participants (each participant as a `Chip`, keyed by index+email since the backend doesn't dedupe participants) inside a `Card`, above a "Back to meetings" link to `/`.
 - Lint config (`eslint.config.mjs`) extends the shared root base (`../../eslint.base.mjs`) plus `eslint-config-next` (`core-web-vitals` + `typescript` rule sets). Prettier formatting is enforced through ESLint (`prettier/prettier` rule from the shared base), not just as a separate step.
 
+## Playwright test fixtures
+
+Reusable accounts already registered in the local dev Postgres (`docker compose up -d` at the repo root — see the root `CLAUDE.md`), created specifically so verifying a UI change per the checklist below never needs registering throwaway users first. They persist across sessions in the `postgres_data` volume as long as nobody runs `docker compose down -v`; if a fresh DB ever comes up without them (volume wiped, new machine), re-seed with the `curl` commands further down before starting.
+
+| Email                         | Password     | Purpose                                                                                                                                                                                                       |
+| ----------------------------- | ------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `qa-owner@example.test`       | `QaPass123!` | Owns the two fixture meetings below — dashboard with 2+ cards, owner view of the meeting detail page.                                                                                                         |
+| `qa-participant@example.test` | `QaPass123!` | Participant (not owner) on both fixture meetings — 200/participant view of the detail page; their own dashboard is empty (`GET /meetings` is owner-only), so this account doubles as an empty-dashboard case. |
+| `qa-outsider@example.test`    | `QaPass123!` | Neither owner nor participant on the fixture meetings — 403 "you don't have access" state.                                                                                                                    |
+| `qa-empty@example.test`       | `QaPass123!` | Owns nothing, isn't a participant anywhere — empty-dashboard state without relying on `qa-participant`'s side effect.                                                                                         |
+
+Fixture meetings (both owned by `qa-owner@example.test`, both with `qa-participant@example.test` as their only participant — log in as the owner to see their current ids, e.g. via the dashboard or `GET /meetings`):
+
+- **QA Sprint Planning** — 2026-09-01T10:00:00.000Z
+- **QA Retro** — 2026-09-08T15:30:00.000Z
+
+Any random UUID (e.g. `00000000-0000-0000-0000-000000000000`) against `/meetings/:id` with any logged-in fixture user gives the 404 "meeting not found" state; a request with no token (or a cleared `localStorage`) gives the 401 → `/login` redirect. Combine these 4 users with a real/nonexistent meeting id to hit every access state on the meeting detail page (success as owner, success as participant, 403 forbidden, 404 not found) plus the dashboard's empty/populated states, without registering anything through the UI first.
+
+Re-seed (idempotent registration; skip a `register` call if it 409s — the user already exists, use `POST /auth/login` instead to get a fresh token):
+
+```bash
+PASS="QaPass123!"
+for email in qa-owner@example.test qa-participant@example.test qa-outsider@example.test qa-empty@example.test; do
+  curl -s -X POST http://localhost:3001/auth/register -H 'Content-Type: application/json' \
+    -d "{\"email\":\"$email\",\"password\":\"$PASS\"}"
+done
+
+OWNER_TOKEN=$(curl -s -X POST http://localhost:3001/auth/login -H 'Content-Type: application/json' \
+  -d "{\"email\":\"qa-owner@example.test\",\"password\":\"$PASS\"}" | python3 -c 'import json,sys;print(json.load(sys.stdin)["accessToken"])')
+
+curl -s -X POST http://localhost:3001/meetings -H "Authorization: Bearer $OWNER_TOKEN" -H 'Content-Type: application/json' \
+  -d '{"title":"QA Sprint Planning","date":"2026-09-01T10:00:00.000Z","participants":["qa-participant@example.test"]}'
+curl -s -X POST http://localhost:3001/meetings -H "Authorization: Bearer $OWNER_TOKEN" -H 'Content-Type: application/json' \
+  -d '{"title":"QA Retro","date":"2026-09-08T15:30:00.000Z","participants":["qa-participant@example.test"]}'
+```
+
+To set a fixture user's token directly in the browser without going through the login form (useful for jumping straight to a state, e.g. the 403 view), get a fresh token via the `login` curl above, then in the Playwright MCP browser: `localStorage.setItem('accessToken', '<token>')` via `browser_evaluate`, then navigate.
+
 ## Definition of done for UI changes
 
 Any change that affects the UI (pages, components, styling, layout, copy shown to users, interaction behaviour) is **not complete** until both of the following are done. Editing the code and having it compile is never enough.
