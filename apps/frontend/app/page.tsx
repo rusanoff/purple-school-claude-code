@@ -1,6 +1,7 @@
 'use client';
 
 import { Alert, Button, Card, EmptyState, Spinner } from '@heroui/react';
+import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { useCallback, useEffect, useState } from 'react';
 
@@ -31,23 +32,25 @@ function formatMeetingDate(date: string): string {
 
 function MeetingCard({ meeting }: { meeting: Meeting }) {
   return (
-    <Card className="min-w-0 gap-3 p-5">
-      <h3 className="truncate font-medium">{meeting.title}</h3>
-      <div className="text-muted flex min-w-0 items-center gap-1.5 text-sm">
-        <span className="shrink-0">
-          <CalendarIcon />
-        </span>
-        <span className="truncate">{formatMeetingDate(meeting.date)}</span>
-      </div>
-      <div className="text-muted flex min-w-0 items-center gap-1.5 text-sm">
-        <span className="shrink-0">
-          <UsersIcon />
-        </span>
-        <span className="min-w-0 truncate">
-          {meeting.participants.join(', ')}
-        </span>
-      </div>
-    </Card>
+    <Link className="block min-w-0" href={`/meetings/${meeting.id}`}>
+      <Card className="hover:border-accent min-w-0 gap-3 p-5 transition-colors">
+        <h3 className="truncate font-medium">{meeting.title}</h3>
+        <div className="text-muted flex min-w-0 items-center gap-1.5 text-sm">
+          <span className="shrink-0">
+            <CalendarIcon />
+          </span>
+          <span className="truncate">{formatMeetingDate(meeting.date)}</span>
+        </div>
+        <div className="text-muted flex min-w-0 items-center gap-1.5 text-sm">
+          <span className="shrink-0">
+            <UsersIcon />
+          </span>
+          <span className="min-w-0 truncate">
+            {meeting.participants.join(', ')}
+          </span>
+        </div>
+      </Card>
+    </Link>
   );
 }
 
@@ -213,12 +216,13 @@ export default function Home() {
                 </Card.Header>
                 <Card.Content className="flex min-w-0 flex-col gap-4">
                   {recentMeetings.map((meeting, index) => (
-                    <div
+                    <Link
                       className={
                         index < recentMeetings.length - 1
-                          ? 'border-border flex min-w-0 flex-col gap-1 border-b pb-4'
-                          : 'flex min-w-0 flex-col gap-1'
+                          ? 'border-border hover:text-accent flex min-w-0 flex-col gap-1 border-b pb-4 transition-colors'
+                          : 'hover:text-accent flex min-w-0 flex-col gap-1 transition-colors'
                       }
+                      href={`/meetings/${meeting.id}`}
                       key={meeting.id}
                     >
                       <span className="truncate text-sm font-medium">
@@ -227,7 +231,7 @@ export default function Home() {
                       <span className="text-muted text-xs">
                         {formatMeetingDate(meeting.date)}
                       </span>
-                    </div>
+                    </Link>
                   ))}
                 </Card.Content>
               </Card>
