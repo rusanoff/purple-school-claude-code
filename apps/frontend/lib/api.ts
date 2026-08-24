@@ -63,7 +63,15 @@ export async function apiFetch(
     response = await fetch(`/api${path}`, {
       ...init,
       headers: {
-        ...(init.body ? { 'Content-Type': 'application/json' } : {}),
+        // Only a plain string body (every current caller passes
+        // `JSON.stringify(...)`) gets the default JSON Content-Type. Any
+        // other body type — `FormData` (multipart upload, see lib/files.ts),
+        // and equally a future `Blob`/`ArrayBuffer`/`URLSearchParams`/stream
+        // — sets its own Content-Type (or none), which a hardcoded
+        // `application/json` here would silently override and break.
+        ...(typeof init.body === 'string'
+          ? { 'Content-Type': 'application/json' }
+          : {}),
         ...(token ? { Authorization: `Bearer ${token}` } : {}),
         ...headers,
       },

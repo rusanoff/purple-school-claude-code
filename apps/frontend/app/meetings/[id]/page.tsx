@@ -13,6 +13,7 @@ import {
   UsersIcon,
   VideoIcon,
 } from '@/components/icons';
+import { MeetingFilesSection } from '@/components/meeting-files';
 import { ApiError, clearAccessToken, getAccessToken } from '@/lib/auth';
 import { formatMeetingDate } from '@/lib/format';
 import { getMeeting, type Meeting } from '@/lib/meetings';
@@ -217,6 +218,19 @@ export default function MeetingPage() {
             </div>
           </div>
         </Card>
+      )}
+
+      {result.kind === 'success' && (
+        // `key` forces a full remount on a client-side navigation between
+        // two different meetings — this page component isn't remounted for
+        // that (see the `isLoading`/`meetingId` tagging comment above), so
+        // without it MeetingFilesSection's own state (file list, in-flight
+        // upload queue) would otherwise leak from the old meeting into the
+        // new one instead of resetting.
+        <MeetingFilesSection
+          key={result.meeting.id}
+          meetingId={result.meeting.id}
+        />
       )}
     </main>
   );
