@@ -63,7 +63,13 @@ export async function apiFetch(
     response = await fetch(`/api${path}`, {
       ...init,
       headers: {
-        ...(init.body ? { 'Content-Type': 'application/json' } : {}),
+        // A `FormData` body (multipart upload, see lib/files.ts) must NOT get
+        // an explicit Content-Type here — the browser sets it itself with the
+        // multipart boundary the backend's parser needs; a hardcoded
+        // `application/json` would silently break the upload instead.
+        ...(init.body && !(init.body instanceof FormData)
+          ? { 'Content-Type': 'application/json' }
+          : {}),
         ...(token ? { Authorization: `Bearer ${token}` } : {}),
         ...headers,
       },

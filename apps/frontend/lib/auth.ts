@@ -81,3 +81,14 @@ export function getCurrentUserEmail(): string | null {
 
   return token ? (decodeJwtPayload(token)?.email ?? null) : null;
 }
+
+/**
+ * The signed-in user's id (`sub` claim), read from the stored access token,
+ * if any. Used to tell "you" apart from other uploaders in a meeting file
+ * list (`MeetingFileResponse.uploadedById`) — see `lib/files.ts`.
+ */
+export function getCurrentUserId(): string | null {
+  const token = getAccessToken();
+
+  return token ? (decodeJwtPayload(token)?.sub ?? null) : null;
+}
