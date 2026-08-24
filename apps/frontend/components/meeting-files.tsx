@@ -7,6 +7,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   CheckIcon,
   DocumentIcon,
+  DownloadIcon,
   FileIcon,
   FilmIcon,
   LockIcon,
@@ -24,6 +25,7 @@ import {
 } from '@/lib/auth';
 import { formatFileSize, formatMeetingDate } from '@/lib/format';
 import {
+  downloadMeetingFile,
   FILE_INPUT_ACCEPT,
   getFileCategory,
   listMeetingFiles,
@@ -317,15 +319,84 @@ function getFileTypeIcon(mimeType: string) {
 }
 
 /**
- * The file list itself: name, type icon, size, upload date, uploader.
- * `MeetingFileResponse` only carries `uploadedById` (a user id), not an
- * email — the backend doesn't expose one for a meeting's owner/participants
- * anywhere the frontend can currently read (see the root `CLAUDE.md`'s
- * access-check notes), so the only uploader this can identify by name is
- * the signed-in user themself; anyone else just reads as "Meeting
- * participant" rather than a fabricated or misleading identity.
+ * Icon-only download action for one file row. Fetches the file as a blob
+ * (`downloadMeetingFile` — a plain `<a href>` can't carry the bearer token
+ * the route requires) rather than navigating directly, so it needs its own
+ * pending/error state rather than being a plain link. A failure renders an
+ * inline message next to the button instead of throwing — same
+ * don't-break-the-list rationale as `DeleteFileButton`'s error handling
+ * below, just without a dialog to show it in.
  */
-function MeetingFileList({ files }: { files: MeetingFile[] }) {
+function DownloadFileButton({
+  file,
+  meetingId,
+}: {
+  file: MeetingFile;
+  meetingId: string;
+}) {
+  const router = useRouter();
+  const [status, setStatus] = useState<'idle' | 'downloading' | 'error'>(
+    'idle',
+  );
+
+  const handleDownload = async () => {
+    const token = getAccessToken();
+    if (!token) {
+      router.replace('/login');
+      return;
+    }
+
+    setStatus('downloading');
+    try {
+      await downloadMeetingFile(token, meetingId, file.id, file.filename);
+      setStatus('idle');
+    } catch (cause) {
+      // Same 401-ends-the-session handling as everywhere else on this page.
+      if (cause instanceof ApiError && cause.status === 401) {
+        clearAccessToken();
+        router.replace('/login');
+        return;
+      }
+      setStatus('error');
+    }
+  };
+
+  return (
+    <div className="flex shrink-0 items-center gap-2">
+      {status === 'error' && (
+        <span className="text-danger text-xs">Couldn&apos;t download</span>
+      )}
+      <Button
+        aria-label={`Download ${file.filename}`}
+        isIconOnly
+        isPending={status === 'downloading'}
+        onPress={() => void handleDownload()}
+        size="sm"
+        variant="ghost"
+      >
+        <DownloadIcon />
+      </Button>
+    </div>
+  );
+}
+
+/**
+ * The file list itself: name, type icon, size, upload date, uploader, plus
+ * per-row download/delete actions. `MeetingFileResponse` only carries
+ * `uploadedById` (a user id), not an email — the backend doesn't expose one
+ * for a meeting's owner/participants anywhere the frontend can currently
+ * read (see the root `CLAUDE.md`'s access-check notes), so the only
+ * uploader this can identify by name is the signed-in user themself; anyone
+ * else just reads as "Meeting participant" rather than a fabricated or
+ * misleading identity.
+ */
+function MeetingFileList({
+  files,
+  meetingId,
+}: {
+  files: MeetingFile[];
+  meetingId: string;
+}) {
   const currentUserId = getCurrentUserId();
 
   if (files.length === 0) {
@@ -371,6 +442,7 @@ function MeetingFileList({ files }: { files: MeetingFile[] }) {
                 : 'Meeting participant'}
             </span>
           </div>
+          <DownloadFileButton file={file} meetingId={meetingId} />
         </li>
       ))}
     </ul>
@@ -545,7 +617,7 @@ export function MeetingFilesSection({ meetingId }: { meetingId: string }) {
         )}
 
         {status === 'ready' && result?.kind === 'success' && (
-          <MeetingFileList files={result.files} />
+          <MeetingFileList files={result.files} meetingId={meetingId} />
         )}
       </Card.Content>
     </Card>
