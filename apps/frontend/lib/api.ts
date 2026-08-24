@@ -63,11 +63,13 @@ export async function apiFetch(
     response = await fetch(`/api${path}`, {
       ...init,
       headers: {
-        // A `FormData` body (multipart upload, see lib/files.ts) must NOT get
-        // an explicit Content-Type here — the browser sets it itself with the
-        // multipart boundary the backend's parser needs; a hardcoded
-        // `application/json` would silently break the upload instead.
-        ...(init.body && !(init.body instanceof FormData)
+        // Only a plain string body (every current caller passes
+        // `JSON.stringify(...)`) gets the default JSON Content-Type. Any
+        // other body type — `FormData` (multipart upload, see lib/files.ts),
+        // and equally a future `Blob`/`ArrayBuffer`/`URLSearchParams`/stream
+        // — sets its own Content-Type (or none), which a hardcoded
+        // `application/json` here would silently override and break.
+        ...(typeof init.body === 'string'
           ? { 'Content-Type': 'application/json' }
           : {}),
         ...(token ? { Authorization: `Bearer ${token}` } : {}),

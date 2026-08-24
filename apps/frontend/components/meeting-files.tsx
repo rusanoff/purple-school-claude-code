@@ -9,7 +9,9 @@ import {
   DocumentIcon,
   FileIcon,
   FilmIcon,
+  LockIcon,
   MusicNoteIcon,
+  SearchOffIcon,
   UploadCloudIcon,
   XCircleIcon,
   XIcon,
@@ -25,11 +27,28 @@ import {
   FILE_INPUT_ACCEPT,
   getFileCategory,
   listMeetingFiles,
-  MAX_FILE_SIZE_BYTES,
+  MAX_FILE_SIZE_MB,
   uploadMeetingFile,
   validateFile,
   type MeetingFile,
 } from '@/lib/files';
+
+/**
+ * `crypto.randomUUID()` requires a secure context (HTTPS, or localhost) and
+ * throws outside one — this is only ever used for a local, non-security-
+ * sensitive React key/queue-item id, so a fallback keeps the dropzone
+ * working instead of throwing on a plain-HTTP deployment.
+ */
+function generateLocalId(): string {
+  if (typeof crypto !== 'undefined' && crypto.randomUUID) {
+    try {
+      return crypto.randomUUID();
+    } catch {
+      // Fall through to the non-crypto fallback below.
+    }
+  }
+  return `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+}
 
 /**
  * One entry in the upload queue below the dropzone. `id` is local-only (not
@@ -43,8 +62,6 @@ interface UploadItem {
   status: 'uploading' | 'success' | 'error';
   error?: string;
 }
-
-const MAX_FILE_SIZE_MB = Math.floor(MAX_FILE_SIZE_BYTES / (1024 * 1024));
 
 /**
  * File-upload dropzone for a meeting's file list. Owns its own upload queue
@@ -61,6 +78,7 @@ export function MeetingFileUpload({
   meetingId: string;
   onUploaded: (file: MeetingFile) => void;
 }) {
+  const router = useRouter();
   const inputRef = useRef<HTMLInputElement>(null);
   const [isDragging, setIsDragging] = useState(false);
   const [queue, setQueue] = useState<UploadItem[]>([]);
@@ -76,6 +94,16 @@ export function MeetingFileUpload({
         );
         onUploaded(uploaded);
       } catch (cause) {
+        // Same as every other 401 on this page (the meeting fetch, the file
+        // list fetch): an expired/invalid token ends the session, so this
+        // redirects rather than just showing "Unauthorized" as if retrying
+        // the same upload could ever succeed.
+        if (cause instanceof ApiError && cause.status === 401) {
+          clearAccessToken();
+          router.replace('/login');
+          return;
+        }
+
         setQueue((prev) =>
           prev.map((item) =>
             item.id === id
@@ -92,7 +120,7 @@ export function MeetingFileUpload({
         );
       }
     },
-    [meetingId, onUploaded],
+    [meetingId, onUploaded, router],
   );
 
   const handleFiles = useCallback(
@@ -111,7 +139,7 @@ export function MeetingFileUpload({
       const items: UploadItem[] = files.map((file) => {
         const validationError = validateFile(file);
         return {
-          id: crypto.randomUUID(),
+          id: generateLocalId(),
           file,
           status: validationError ? 'error' : 'uploading',
           error: validationError ?? undefined,
@@ -330,7 +358,12 @@ function MeetingFileList({ files }: { files: MeetingFile[] }) {
             <span className="truncate text-sm font-medium">
               {file.filename}
             </span>
-            <span className="text-muted truncate text-xs">
+            {/* Not `truncate` — unlike the filename above, this is a short,
+                fixed set of values (size, date, uploader), not an
+                unbounded one. Truncating it clips the uploader label
+                mid-word on a narrow viewport instead; wrapping to a second
+                line keeps all three readable. */}
+            <span className="text-muted text-xs">
               {formatFileSize(file.size)} · {formatMeetingDate(file.createdAt)}{' '}
               ·{' '}
               {file.uploadedById === currentUserId
@@ -345,18 +378,35 @@ function MeetingFileList({ files }: { files: MeetingFile[] }) {
 }
 
 /**
+ * The outcome of fetching this meeting's files — one discriminated union
+ * rather than separate `files`/`error` state, same rationale as the page's
+ * own `LoadResult` one file over: independent booleans let a retry that
+ * fails a *different* way than the first attempt leave stale data behind
+ * instead of cleanly replacing it. `forbidden`/`not-found` mirror
+ * `assertMeetingAccess`'s 403/404 (see the root `CLAUDE.md`) — reachable
+ * here if access was revoked or the meeting was deleted after the page's
+ * own meeting fetch already succeeded.
+ */
+type FilesLoadResult =
+  | { kind: 'success'; files: MeetingFile[] }
+  | { kind: 'forbidden' }
+  | { kind: 'not-found' }
+  | { kind: 'error'; message: string };
+
+/**
  * The files section of the meeting detail page (`app/meetings/[id]/page.tsx`)
  * — upload dropzone above the current file list. Fetches its own list on
  * mount rather than receiving one as a prop: it needs to refetch after a
  * retry, and owning that state here keeps the page component from having to
- * know about files at all.
+ * know about files at all. The page renders this with `key={meetingId}` so
+ * navigating client-side between two different meetings remounts it instead
+ * of leaking one meeting's upload queue/file list into another's.
  */
 export function MeetingFilesSection({ meetingId }: { meetingId: string }) {
   const router = useRouter();
 
   const [status, setStatus] = useState<'loading' | 'ready'>('loading');
-  const [files, setFiles] = useState<MeetingFile[] | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const [result, setResult] = useState<FilesLoadResult | null>(null);
 
   // Shared by the initial load and the "Retry" button, same pattern as the
   // meeting fetch above it on the page.
@@ -364,8 +414,7 @@ export function MeetingFilesSection({ meetingId }: { meetingId: string }) {
     async (token: string) => {
       try {
         const data = await listMeetingFiles(token, meetingId);
-        setFiles(data);
-        setError(null);
+        setResult({ kind: 'success', files: data });
       } catch (cause) {
         if (cause instanceof ApiError && cause.status === 401) {
           clearAccessToken();
@@ -373,9 +422,19 @@ export function MeetingFilesSection({ meetingId }: { meetingId: string }) {
           return;
         }
 
-        setError(
-          cause instanceof ApiError ? cause.message : 'Something went wrong.',
-        );
+        if (cause instanceof ApiError && cause.status === 403) {
+          setResult({ kind: 'forbidden' });
+        } else if (cause instanceof ApiError && cause.status === 404) {
+          setResult({ kind: 'not-found' });
+        } else {
+          setResult({
+            kind: 'error',
+            message:
+              cause instanceof ApiError
+                ? cause.message
+                : 'Something went wrong.',
+          });
+        }
       } finally {
         setStatus('ready');
       }
@@ -398,7 +457,7 @@ export function MeetingFilesSection({ meetingId }: { meetingId: string }) {
     void loadFiles(token);
   }, [loadFiles, router]);
 
-  const handleRetry = () => {
+  const handleRetry = useCallback(() => {
     const token = getAccessToken();
 
     if (!token) {
@@ -408,14 +467,27 @@ export function MeetingFilesSection({ meetingId }: { meetingId: string }) {
 
     setStatus('loading');
     void loadFiles(token);
-  };
+  }, [loadFiles, router]);
 
   // New uploads are prepended rather than triggering a refetch — the list
   // is already newest-first (matches the backend's ordering), and the
-  // upload response is itself the newest file.
-  const handleUploaded = (file: MeetingFile) => {
-    setFiles((prev) => (prev ? [file, ...prev] : [file]));
-  };
+  // upload response is itself the newest file. useCallback here isn't just
+  // hygiene — MeetingFileUpload's own runUpload/handleFiles are memoized on
+  // this prop's identity, so an unstable one here would silently defeat
+  // that memoization on every render.
+  const handleUploaded = useCallback((file: MeetingFile) => {
+    setResult((prev) =>
+      prev?.kind === 'success'
+        ? { kind: 'success', files: [file, ...prev.files] }
+        : prev,
+    );
+  }, []);
+
+  // Forbidden/not-found are permanent for this meeting — pointless to offer
+  // an upload dropzone for files that couldn't be listed for the same
+  // access reason, so it only renders while that's not the known state.
+  const showUpload =
+    result?.kind !== 'forbidden' && result?.kind !== 'not-found';
 
   return (
     <Card className="min-w-0 gap-6 p-6 sm:p-8">
@@ -425,7 +497,12 @@ export function MeetingFilesSection({ meetingId }: { meetingId: string }) {
         </Card.Title>
       </Card.Header>
       <Card.Content className="flex min-w-0 flex-col gap-6">
-        <MeetingFileUpload meetingId={meetingId} onUploaded={handleUploaded} />
+        {showUpload && (
+          <MeetingFileUpload
+            meetingId={meetingId}
+            onUploaded={handleUploaded}
+          />
+        )}
 
         {status === 'loading' && (
           <div className="flex justify-center py-8">
@@ -433,12 +510,33 @@ export function MeetingFilesSection({ meetingId }: { meetingId: string }) {
           </div>
         )}
 
-        {status === 'ready' && error && (
+        {status === 'ready' &&
+          (result?.kind === 'forbidden' || result?.kind === 'not-found') && (
+            <EmptyState className="flex flex-col items-center gap-3 py-10 text-center">
+              <span className="bg-danger/15 text-danger flex size-12 items-center justify-center rounded-full">
+                {result.kind === 'forbidden' ? <LockIcon /> : <SearchOffIcon />}
+              </span>
+              <div className="flex flex-col gap-1">
+                <p className="text-foreground text-sm font-medium">
+                  {result.kind === 'forbidden'
+                    ? "You don't have access to these files"
+                    : 'Meeting not found'}
+                </p>
+                <p className="text-muted text-xs">
+                  {result.kind === 'forbidden'
+                    ? "Only this meeting's owner and participants can view its files."
+                    : 'It may have been deleted since this page loaded.'}
+                </p>
+              </div>
+            </EmptyState>
+          )}
+
+        {status === 'ready' && result?.kind === 'error' && (
           <Alert role="alert" status="danger">
             <Alert.Indicator />
             <Alert.Content>
               <Alert.Title>Couldn&apos;t load files</Alert.Title>
-              <Alert.Description>{error}</Alert.Description>
+              <Alert.Description>{result.message}</Alert.Description>
             </Alert.Content>
             <Button onPress={handleRetry} size="sm" variant="ghost">
               Retry
@@ -446,8 +544,8 @@ export function MeetingFilesSection({ meetingId }: { meetingId: string }) {
           </Alert>
         )}
 
-        {status === 'ready' && !error && files && (
-          <MeetingFileList files={files} />
+        {status === 'ready' && result?.kind === 'success' && (
+          <MeetingFileList files={result.files} />
         )}
       </Card.Content>
     </Card>

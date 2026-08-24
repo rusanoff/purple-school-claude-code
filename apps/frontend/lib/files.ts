@@ -127,6 +127,13 @@ export function getFileCategory(
  */
 export const MAX_FILE_SIZE_BYTES = 50 * 1024 * 1024;
 
+/** `MAX_FILE_SIZE_BYTES` in whole MB — the single source for the "50MB"
+ * shown to the user, in both `validateFile`'s own rejection message and the
+ * dropzone hint text (`components/meeting-files.tsx`). Computed once here
+ * rather than in each place that displays it, so the two can't ever show
+ * different numbers. */
+export const MAX_FILE_SIZE_MB = Math.floor(MAX_FILE_SIZE_BYTES / (1024 * 1024));
+
 /**
  * Client-side pre-check for a file about to be uploaded — returns a
  * human-readable rejection reason, or `null` if the file passes. Called
@@ -141,7 +148,7 @@ export function validateFile(file: File): string | null {
   }
 
   if (file.size > MAX_FILE_SIZE_BYTES) {
-    return `File is too large (max ${Math.floor(MAX_FILE_SIZE_BYTES / (1024 * 1024))}MB)`;
+    return `File is too large (max ${MAX_FILE_SIZE_MB}MB)`;
   }
 
   return null;

@@ -221,7 +221,16 @@ export default function MeetingPage() {
       )}
 
       {result.kind === 'success' && (
-        <MeetingFilesSection meetingId={result.meeting.id} />
+        // `key` forces a full remount on a client-side navigation between
+        // two different meetings — this page component isn't remounted for
+        // that (see the `isLoading`/`meetingId` tagging comment above), so
+        // without it MeetingFilesSection's own state (file list, in-flight
+        // upload queue) would otherwise leak from the old meeting into the
+        // new one instead of resetting.
+        <MeetingFilesSection
+          key={result.meeting.id}
+          meetingId={result.meeting.id}
+        />
       )}
     </main>
   );
