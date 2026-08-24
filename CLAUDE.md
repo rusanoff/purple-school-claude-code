@@ -17,7 +17,7 @@ The frontend never calls the backend cross-origin. `apps/frontend/next.config.ts
 
 ## Database
 
-Start local Postgres with `docker compose up -d` (repo root). The backend connects via its own `DATABASE_URL` (`apps/backend/.env`) and manages schema with Prisma — the backend's e2e tests hit this real database, so it must be up before `pnpm --filter backend test:e2e`.
+Start local Postgres with `docker compose up -d` (repo root). The backend connects via its own `DATABASE_URL` (`apps/backend/.env`) and manages schema with Prisma — the backend's e2e tests hit this real database, so it must be up before `pnpm --filter backend test:e2e`. It also holds a few persistent `qa-*@example.test` users and fixture meetings, seeded once for manual/Playwright UI testing — see the "Playwright test fixtures" section of `apps/frontend/CLAUDE.md` for credentials and how to re-seed them if the `postgres_data` volume is ever wiped.
 
 ## Shared tooling architecture
 
