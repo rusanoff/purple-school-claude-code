@@ -1,7 +1,6 @@
 /**
  * Client for the backend meeting-files API
- * (`apps/backend/src/meeting-files`): upload and list. Download and delete
- * are added in a later phase (see `docs/plan-meeting-file-upload-and-display.md`).
+ * (`apps/backend/src/meeting-files`): upload, list, download, and delete.
  */
 
 import { apiFetch } from './api';
@@ -59,6 +58,65 @@ export async function listMeetingFiles(
   );
 
   return (await response.json()) as MeetingFile[];
+}
+
+/**
+ * `GET /meetings/:id/files/:fileId` — downloads a file and saves it via a
+ * throwaway `<a download>` pointed at an object URL. A plain `<a href="...">`
+ * can't carry the `Authorization` header this route requires, so the file has
+ * to be fetched as a blob first rather than just navigating to the URL. Same
+ * 401/403 shape as `uploadMeetingFile`; 404 means the file (or its meeting)
+ * was deleted since the list was last loaded.
+ */
+export async function downloadMeetingFile(
+  token: string,
+  meetingId: string,
+  fileId: string,
+  filename: string,
+): Promise<void> {
+  const response = await apiFetch(
+    `/meetings/${encodeURIComponent(meetingId)}/files/${encodeURIComponent(fileId)}`,
+    { token },
+  );
+
+  const blob = await response.blob();
+  const url = URL.createObjectURL(blob);
+
+  try {
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = filename;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+  } finally {
+    // Deferred rather than revoked immediately after `click()` — the
+    // browser needs time to actually start reading the object URL before
+    // it's invalidated, and a same-tick `setTimeout(fn, 0)` isn't a
+    // guarantee that it has by then (a slow device or a large blob could
+    // still be mid-read). A few seconds is a heuristic too, just a much
+    // safer margin — there's no cross-browser "download started" event to
+    // wait on instead.
+    setTimeout(() => URL.revokeObjectURL(url), 5000);
+  }
+}
+
+/**
+ * `DELETE /meetings/:id/files/:fileId` — the owner may delete any file, a
+ * participant only one they uploaded themselves (`file.uploadedById`
+ * matches); enforced by the backend, not this client. Same 401/403 shape as
+ * `uploadMeetingFile`; 404 means the file was already deleted (e.g. by
+ * another tab, or another participant with the same right).
+ */
+export async function deleteMeetingFile(
+  token: string,
+  meetingId: string,
+  fileId: string,
+): Promise<void> {
+  await apiFetch(
+    `/meetings/${encodeURIComponent(meetingId)}/files/${encodeURIComponent(fileId)}`,
+    { method: 'DELETE', token },
+  );
 }
 
 /**

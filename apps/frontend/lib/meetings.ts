@@ -8,6 +8,16 @@ export interface Meeting {
   title: string;
   date: string;
   participants: string[];
+  /**
+   * Whether the signed-in caller is this meeting's owner, as opposed to
+   * "just" a participant with the same read access (`assertMeetingAccess`
+   * on the backend grants both) — computed server-side from `ownerId`, not
+   * derivable from `participants` alone (an owner isn't guaranteed to be
+   * absent from that list). Used by `components/meeting-files.tsx` to
+   * decide who sees the delete button for which files: the owner may
+   * delete any file, a participant only their own.
+   */
+  isOwner: boolean;
 }
 
 /**

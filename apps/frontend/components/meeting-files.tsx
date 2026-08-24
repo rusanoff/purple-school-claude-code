@@ -1,17 +1,26 @@
 'use client';
 
-import { Alert, Button, Card, EmptyState, Spinner } from '@heroui/react';
+import {
+  Alert,
+  AlertDialog,
+  Button,
+  Card,
+  EmptyState,
+  Spinner,
+} from '@heroui/react';
 import { useRouter } from 'next/navigation';
 import { useCallback, useEffect, useRef, useState } from 'react';
 
 import {
   CheckIcon,
   DocumentIcon,
+  DownloadIcon,
   FileIcon,
   FilmIcon,
   LockIcon,
   MusicNoteIcon,
   SearchOffIcon,
+  TrashIcon,
   UploadCloudIcon,
   XCircleIcon,
   XIcon,
@@ -24,6 +33,8 @@ import {
 } from '@/lib/auth';
 import { formatFileSize, formatMeetingDate } from '@/lib/format';
 import {
+  deleteMeetingFile,
+  downloadMeetingFile,
   FILE_INPUT_ACCEPT,
   getFileCategory,
   listMeetingFiles,
@@ -317,15 +328,212 @@ function getFileTypeIcon(mimeType: string) {
 }
 
 /**
- * The file list itself: name, type icon, size, upload date, uploader.
- * `MeetingFileResponse` only carries `uploadedById` (a user id), not an
- * email — the backend doesn't expose one for a meeting's owner/participants
- * anywhere the frontend can currently read (see the root `CLAUDE.md`'s
- * access-check notes), so the only uploader this can identify by name is
- * the signed-in user themself; anyone else just reads as "Meeting
- * participant" rather than a fabricated or misleading identity.
+ * Icon-only download action for one file row. Fetches the file as a blob
+ * (`downloadMeetingFile` — a plain `<a href>` can't carry the bearer token
+ * the route requires) rather than navigating directly, so it needs its own
+ * pending/error state rather than being a plain link. A failure renders an
+ * inline message next to the button instead of throwing — same
+ * don't-break-the-list rationale as `DeleteFileButton`'s error handling
+ * below, just without a dialog to show it in.
  */
-function MeetingFileList({ files }: { files: MeetingFile[] }) {
+function DownloadFileButton({
+  file,
+  meetingId,
+}: {
+  file: MeetingFile;
+  meetingId: string;
+}) {
+  const router = useRouter();
+  const [status, setStatus] = useState<'idle' | 'downloading' | 'error'>(
+    'idle',
+  );
+
+  const handleDownload = async () => {
+    const token = getAccessToken();
+    if (!token) {
+      router.replace('/login');
+      return;
+    }
+
+    setStatus('downloading');
+    try {
+      await downloadMeetingFile(token, meetingId, file.id, file.filename);
+      setStatus('idle');
+    } catch (cause) {
+      // Same 401-ends-the-session handling as everywhere else on this page.
+      if (cause instanceof ApiError && cause.status === 401) {
+        clearAccessToken();
+        router.replace('/login');
+        return;
+      }
+      setStatus('error');
+    }
+  };
+
+  return (
+    <div className="flex shrink-0 items-center gap-2">
+      {status === 'error' && (
+        <span className="text-danger text-xs">Couldn&apos;t download</span>
+      )}
+      <Button
+        aria-label={`Download ${file.filename}`}
+        isIconOnly
+        isPending={status === 'downloading'}
+        onPress={() => void handleDownload()}
+        size="sm"
+        variant="ghost"
+      >
+        <DownloadIcon />
+      </Button>
+    </div>
+  );
+}
+
+/**
+ * Delete action for one file row — the caller (`MeetingFileList`) only
+ * renders this at all when `isOwner || file.uploadedById === currentUserId`
+ * holds, so there's no separate `canDelete` prop here to gate on. Requires
+ * an explicit confirmation before the irreversible `DELETE` — an
+ * `AlertDialog` fully controlled by local `isOpen` state rather than the
+ * component's implicit trigger wiring, since the confirm button needs to
+ * run an async request and stay open on failure instead of closing
+ * immediately the way `slot="close"` would.
+ */
+function DeleteFileButton({
+  file,
+  meetingId,
+  onDeleted,
+}: {
+  file: MeetingFile;
+  meetingId: string;
+  onDeleted: (fileId: string) => void;
+}) {
+  const router = useRouter();
+  const [isOpen, setIsOpen] = useState(false);
+  const [isDeleting, setIsDeleting] = useState(false);
+  // `null` doubles as "no error" — kept as the single source of truth
+  // rather than a separate `status === 'error'` flag, so the two can't
+  // drift out of sync (e.g. one set without the other).
+  const [error, setError] = useState<string | null>(null);
+
+  const openDialog = () => {
+    setError(null);
+    setIsOpen(true);
+  };
+
+  const handleConfirm = async () => {
+    const token = getAccessToken();
+    if (!token) {
+      router.replace('/login');
+      return;
+    }
+
+    setIsDeleting(true);
+    setError(null);
+    try {
+      await deleteMeetingFile(token, meetingId, file.id);
+      setIsOpen(false);
+      onDeleted(file.id);
+    } catch (cause) {
+      // Same 401-ends-the-session handling as everywhere else on this page.
+      if (cause instanceof ApiError && cause.status === 401) {
+        clearAccessToken();
+        router.replace('/login');
+        return;
+      }
+
+      // Anything else (most notably a 403 — the delete right this button
+      // was rendered for turned out to be stale, e.g. ownership changed in
+      // another tab) is shown inline in the dialog rather than thrown: the
+      // dialog stays open, and the file list behind it is untouched.
+      setError(
+        cause instanceof ApiError ? cause.message : 'Failed to delete file.',
+      );
+    } finally {
+      setIsDeleting(false);
+    }
+  };
+
+  return (
+    <>
+      <Button
+        aria-label={`Delete ${file.filename}`}
+        isIconOnly
+        onPress={openDialog}
+        size="sm"
+        variant="ghost"
+      >
+        <TrashIcon />
+      </Button>
+
+      <AlertDialog.Backdrop isOpen={isOpen} onOpenChange={setIsOpen}>
+        <AlertDialog.Container>
+          <AlertDialog.Dialog className="sm:max-w-[400px]">
+            <AlertDialog.CloseTrigger />
+            <AlertDialog.Header>
+              <AlertDialog.Icon status="danger" />
+              <AlertDialog.Heading>Delete this file?</AlertDialog.Heading>
+            </AlertDialog.Header>
+            <AlertDialog.Body className="flex flex-col gap-3">
+              <p>
+                This permanently deletes{' '}
+                <strong className="text-foreground">{file.filename}</strong> —
+                both its record and the file on disk. This action cannot be
+                undone.
+              </p>
+              {error && (
+                <Alert role="alert" status="danger">
+                  <Alert.Indicator />
+                  <Alert.Content>
+                    <Alert.Description>{error}</Alert.Description>
+                  </Alert.Content>
+                </Alert>
+              )}
+            </AlertDialog.Body>
+            <AlertDialog.Footer>
+              <Button
+                isDisabled={isDeleting}
+                onPress={() => setIsOpen(false)}
+                variant="tertiary"
+              >
+                Cancel
+              </Button>
+              <Button
+                isPending={isDeleting}
+                onPress={() => void handleConfirm()}
+                variant="danger"
+              >
+                Delete
+              </Button>
+            </AlertDialog.Footer>
+          </AlertDialog.Dialog>
+        </AlertDialog.Container>
+      </AlertDialog.Backdrop>
+    </>
+  );
+}
+
+/**
+ * The file list itself: name, type icon, size, upload date, uploader, plus
+ * per-row download/delete actions. `MeetingFileResponse` only carries
+ * `uploadedById` (a user id), not an email — the backend doesn't expose one
+ * for a meeting's owner/participants anywhere the frontend can currently
+ * read (see the root `CLAUDE.md`'s access-check notes), so the only
+ * uploader this can identify by name is the signed-in user themself; anyone
+ * else just reads as "Meeting participant" rather than a fabricated or
+ * misleading identity.
+ */
+function MeetingFileList({
+  files,
+  isOwner,
+  meetingId,
+  onDeleted,
+}: {
+  files: MeetingFile[];
+  isOwner: boolean;
+  meetingId: string;
+  onDeleted: (fileId: string) => void;
+}) {
   const currentUserId = getCurrentUserId();
 
   if (files.length === 0) {
@@ -371,6 +579,16 @@ function MeetingFileList({ files }: { files: MeetingFile[] }) {
                 : 'Meeting participant'}
             </span>
           </div>
+          <div className="flex shrink-0 items-center gap-1">
+            <DownloadFileButton file={file} meetingId={meetingId} />
+            {(isOwner || file.uploadedById === currentUserId) && (
+              <DeleteFileButton
+                file={file}
+                meetingId={meetingId}
+                onDeleted={onDeleted}
+              />
+            )}
+          </div>
         </li>
       ))}
     </ul>
@@ -400,9 +618,18 @@ type FilesLoadResult =
  * retry, and owning that state here keeps the page component from having to
  * know about files at all. The page renders this with `key={meetingId}` so
  * navigating client-side between two different meetings remounts it instead
- * of leaking one meeting's upload queue/file list into another's.
+ * of leaking one meeting's upload queue/file list into another's. `isOwner`
+ * comes from the page (`isMeetingOwner` in `lib/meetings.ts`, derived from
+ * the meeting it already fetched) — decides who sees the delete button for
+ * which files in the list below.
  */
-export function MeetingFilesSection({ meetingId }: { meetingId: string }) {
+export function MeetingFilesSection({
+  isOwner,
+  meetingId,
+}: {
+  isOwner: boolean;
+  meetingId: string;
+}) {
   const router = useRouter();
 
   const [status, setStatus] = useState<'loading' | 'ready'>('loading');
@@ -483,6 +710,17 @@ export function MeetingFilesSection({ meetingId }: { meetingId: string }) {
     );
   }, []);
 
+  // Mirrors `handleUploaded` for the opposite direction — a successful
+  // delete removes the row from local state instead of triggering a
+  // refetch. Passed to `MeetingFileList`, which is why it's memoized.
+  const handleDeleted = useCallback((fileId: string) => {
+    setResult((prev) =>
+      prev?.kind === 'success'
+        ? { kind: 'success', files: prev.files.filter((f) => f.id !== fileId) }
+        : prev,
+    );
+  }, []);
+
   // Forbidden/not-found are permanent for this meeting — pointless to offer
   // an upload dropzone for files that couldn't be listed for the same
   // access reason, so it only renders while that's not the known state.
@@ -545,7 +783,12 @@ export function MeetingFilesSection({ meetingId }: { meetingId: string }) {
         )}
 
         {status === 'ready' && result?.kind === 'success' && (
-          <MeetingFileList files={result.files} />
+          <MeetingFileList
+            files={result.files}
+            isOwner={isOwner}
+            meetingId={meetingId}
+            onDeleted={handleDeleted}
+          />
         )}
       </Card.Content>
     </Card>

@@ -16,6 +16,10 @@ export class GetMeetingsHandler implements IQueryHandler<GetMeetingsQuery> {
       orderBy: { createdAt: 'desc' },
     });
 
-    return meetings.map(toMeetingResponse);
+    // This list is always owner-scoped (`where: { ownerId }` above), so
+    // every meeting in it belongs to the caller — `isOwner` is trivially
+    // true for all of them, unlike `GetMeetingHandler`'s owner-or-participant
+    // case.
+    return meetings.map((meeting) => toMeetingResponse(meeting, ownerId));
   }
 }

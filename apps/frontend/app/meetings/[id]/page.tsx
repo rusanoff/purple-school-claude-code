@@ -228,6 +228,7 @@ export default function MeetingPage() {
         // upload queue) would otherwise leak from the old meeting into the
         // new one instead of resetting.
         <MeetingFilesSection
+          isOwner={result.meeting.isOwner}
           key={result.meeting.id}
           meetingId={result.meeting.id}
         />
