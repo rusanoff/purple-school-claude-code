@@ -13,6 +13,7 @@ import {
   UsersIcon,
   VideoIcon,
 } from '@/components/icons';
+import { MeetingFilesSection } from '@/components/meeting-files';
 import { ApiError, clearAccessToken, getAccessToken } from '@/lib/auth';
 import { formatMeetingDate } from '@/lib/format';
 import { getMeeting, type Meeting } from '@/lib/meetings';
@@ -217,6 +218,10 @@ export default function MeetingPage() {
             </div>
           </div>
         </Card>
+      )}
+
+      {result.kind === 'success' && (
+        <MeetingFilesSection meetingId={result.meeting.id} />
       )}
     </main>
   );

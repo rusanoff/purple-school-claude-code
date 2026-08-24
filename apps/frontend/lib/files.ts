@@ -100,6 +100,24 @@ function isAllowedMimeType(mimeType: string): boolean {
 }
 
 /**
+ * Broad category for a file's MIME type, used by the file list to pick a
+ * type icon (see `getFileTypeIcon` in `components/meeting-files.tsx`).
+ * Derived from the same allowlist `validateFile` enforces, so an allowed
+ * file always maps to `'audio' | 'video' | 'document'` — `'other'` is
+ * reachable in the UI only for a file the backend accepted under a rule
+ * this list doesn't (yet) know about, and gets a generic fallback icon.
+ */
+export function getFileCategory(
+  mimeType: string,
+): 'audio' | 'video' | 'document' | 'other' {
+  const normalized = mimeType.toLowerCase();
+  if (normalized.startsWith('audio/')) return 'audio';
+  if (normalized.startsWith('video/')) return 'video';
+  if (ALLOWED_DOCUMENT_MIME_TYPES.has(normalized)) return 'document';
+  return 'other';
+}
+
+/**
  * Mirrors the backend's *documented default* (`FILE_MAX_SIZE_BYTES` in
  * `apps/backend/.env.example`, 50MB) — the actual server-side limit is
  * configurable per deployment and not exposed over the API, so a deployment
