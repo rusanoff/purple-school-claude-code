@@ -27,7 +27,9 @@ export async function getMeetings(token: string): Promise<Meeting[]> {
  * means no meeting with that id exists.
  */
 export async function getMeeting(token: string, id: string): Promise<Meeting> {
-  const response = await apiFetch(`/meetings/${id}`, { token });
+  const response = await apiFetch(`/meetings/${encodeURIComponent(id)}`, {
+    token,
+  });
 
   return (await response.json()) as Meeting;
 }

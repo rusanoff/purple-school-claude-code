@@ -18,17 +18,11 @@ import {
   getAccessToken,
   getCurrentUserEmail,
 } from '@/lib/auth';
+import { formatMeetingDate } from '@/lib/format';
 import { getMeetings, type Meeting } from '@/lib/meetings';
 
 /** How many of the newest meetings show up in the "Recent meetings" widget. */
 const RECENT_MEETINGS_COUNT = 3;
-
-function formatMeetingDate(date: string): string {
-  return new Date(date).toLocaleString('en-US', {
-    dateStyle: 'medium',
-    timeStyle: 'short',
-  });
-}
 
 function MeetingCard({ meeting }: { meeting: Meeting }) {
   return (
@@ -113,10 +107,16 @@ export default function Home() {
   const handleRetry = () => {
     const token = getAccessToken();
 
-    if (token) {
-      setStatus('checking');
-      void loadMeetings(token);
+    // Same as the mount effect: no token means the session ended (e.g. a
+    // logout in another tab) since the last render, so send the user back
+    // to sign in instead of leaving a Retry button that does nothing.
+    if (!token) {
+      router.replace('/login');
+      return;
     }
+
+    setStatus('checking');
+    void loadMeetings(token);
   };
 
   // Auth is verified client-side (the token lives in localStorage), so the
