@@ -131,6 +131,43 @@ export function UsersIcon() {
   );
 }
 
+export function SearchOffIcon() {
+  return (
+    <svg
+      aria-hidden="true"
+      className="size-4"
+      fill="none"
+      stroke="currentColor"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      strokeWidth={1.6}
+      viewBox="0 0 24 24"
+    >
+      <circle cx="10.5" cy="10.5" r="6.5" />
+      <path d="M21 21l-5.2-5.2" />
+      <path d="M6.5 6.5l8 8" />
+    </svg>
+  );
+}
+
+export function ArrowLeftIcon() {
+  return (
+    <svg
+      aria-hidden="true"
+      className="size-4"
+      fill="none"
+      stroke="currentColor"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      strokeWidth={1.6}
+      viewBox="0 0 24 24"
+    >
+      <path d="M19 12H5" />
+      <path d="m11 18-6-6 6-6" />
+    </svg>
+  );
+}
+
 export function VideoIcon() {
   return (
     <svg
