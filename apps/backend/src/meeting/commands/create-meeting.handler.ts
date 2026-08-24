@@ -20,6 +20,6 @@ export class CreateMeetingHandler implements ICommandHandler<CreateMeetingComman
       data: { ownerId, title, date: new Date(date), participants },
     });
 
-    return toMeetingResponse(meeting);
+    return toMeetingResponse(meeting, ownerId);
   }
 }

@@ -390,9 +390,9 @@ function DownloadFileButton({
 }
 
 /**
- * Delete action for one file row — visible only when `canDelete` is true
- * (decided by the caller: the meeting owner for any file, a participant only
- * for their own upload; see `isMeetingOwner` in `lib/meetings.ts`). Requires
+ * Delete action for one file row — the caller (`MeetingFileList`) only
+ * renders this at all when `isOwner || file.uploadedById === currentUserId`
+ * holds, so there's no separate `canDelete` prop here to gate on. Requires
  * an explicit confirmation before the irreversible `DELETE` — an
  * `AlertDialog` fully controlled by local `isOpen` state rather than the
  * component's implicit trigger wiring, since the confirm button needs to
@@ -410,11 +410,13 @@ function DeleteFileButton({
 }) {
   const router = useRouter();
   const [isOpen, setIsOpen] = useState(false);
-  const [status, setStatus] = useState<'idle' | 'deleting' | 'error'>('idle');
+  const [isDeleting, setIsDeleting] = useState(false);
+  // `null` doubles as "no error" — kept as the single source of truth
+  // rather than a separate `status === 'error'` flag, so the two can't
+  // drift out of sync (e.g. one set without the other).
   const [error, setError] = useState<string | null>(null);
 
   const openDialog = () => {
-    setStatus('idle');
     setError(null);
     setIsOpen(true);
   };
@@ -426,7 +428,7 @@ function DeleteFileButton({
       return;
     }
 
-    setStatus('deleting');
+    setIsDeleting(true);
     setError(null);
     try {
       await deleteMeetingFile(token, meetingId, file.id);
@@ -444,10 +446,11 @@ function DeleteFileButton({
       // was rendered for turned out to be stale, e.g. ownership changed in
       // another tab) is shown inline in the dialog rather than thrown: the
       // dialog stays open, and the file list behind it is untouched.
-      setStatus('error');
       setError(
         cause instanceof ApiError ? cause.message : 'Failed to delete file.',
       );
+    } finally {
+      setIsDeleting(false);
     }
   };
 
@@ -478,7 +481,7 @@ function DeleteFileButton({
                 both its record and the file on disk. This action cannot be
                 undone.
               </p>
-              {status === 'error' && (
+              {error && (
                 <Alert role="alert" status="danger">
                   <Alert.Indicator />
                   <Alert.Content>
@@ -489,14 +492,14 @@ function DeleteFileButton({
             </AlertDialog.Body>
             <AlertDialog.Footer>
               <Button
-                isDisabled={status === 'deleting'}
+                isDisabled={isDeleting}
                 onPress={() => setIsOpen(false)}
                 variant="tertiary"
               >
                 Cancel
               </Button>
               <Button
-                isPending={status === 'deleting'}
+                isPending={isDeleting}
                 onPress={() => void handleConfirm()}
                 variant="danger"
               >

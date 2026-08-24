@@ -28,6 +28,6 @@ export class GetMeetingHandler implements IQueryHandler<GetMeetingQuery> {
 
     assertMeetingAccess(meeting, { userId, email });
 
-    return toMeetingResponse(meeting);
+    return toMeetingResponse(meeting, userId);
   }
 }

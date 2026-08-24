@@ -23,6 +23,7 @@ interface MeetingBody {
   title: string;
   date: string;
   participants: string[];
+  isOwner: boolean;
 }
 
 interface MeetingFileBody {

@@ -14,14 +14,9 @@ import {
   VideoIcon,
 } from '@/components/icons';
 import { MeetingFilesSection } from '@/components/meeting-files';
-import {
-  ApiError,
-  clearAccessToken,
-  getAccessToken,
-  getCurrentUserEmail,
-} from '@/lib/auth';
+import { ApiError, clearAccessToken, getAccessToken } from '@/lib/auth';
 import { formatMeetingDate } from '@/lib/format';
-import { getMeeting, isMeetingOwner, type Meeting } from '@/lib/meetings';
+import { getMeeting, type Meeting } from '@/lib/meetings';
 
 /**
  * The outcome of fetching one meeting, as a single discriminated union
@@ -233,7 +228,7 @@ export default function MeetingPage() {
         // upload queue) would otherwise leak from the old meeting into the
         // new one instead of resetting.
         <MeetingFilesSection
-          isOwner={isMeetingOwner(result.meeting, getCurrentUserEmail())}
+          isOwner={result.meeting.isOwner}
           key={result.meeting.id}
           meetingId={result.meeting.id}
         />

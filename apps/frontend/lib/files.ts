@@ -90,10 +90,14 @@ export async function downloadMeetingFile(
     link.click();
     link.remove();
   } finally {
-    // Deferred rather than revoked immediately after `click()` — the browser
-    // needs a tick to actually start reading the object URL before it's
-    // invalidated.
-    setTimeout(() => URL.revokeObjectURL(url), 0);
+    // Deferred rather than revoked immediately after `click()` — the
+    // browser needs time to actually start reading the object URL before
+    // it's invalidated, and a same-tick `setTimeout(fn, 0)` isn't a
+    // guarantee that it has by then (a slow device or a large blob could
+    // still be mid-read). A few seconds is a heuristic too, just a much
+    // safer margin — there's no cross-browser "download started" event to
+    // wait on instead.
+    setTimeout(() => URL.revokeObjectURL(url), 5000);
   }
 }
 

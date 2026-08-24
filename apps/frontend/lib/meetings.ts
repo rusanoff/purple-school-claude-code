@@ -8,6 +8,16 @@ export interface Meeting {
   title: string;
   date: string;
   participants: string[];
+  /**
+   * Whether the signed-in caller is this meeting's owner, as opposed to
+   * "just" a participant with the same read access (`assertMeetingAccess`
+   * on the backend grants both) — computed server-side from `ownerId`, not
+   * derivable from `participants` alone (an owner isn't guaranteed to be
+   * absent from that list). Used by `components/meeting-files.tsx` to
+   * decide who sees the delete button for which files: the owner may
+   * delete any file, a participant only their own.
+   */
+  isOwner: boolean;
 }
 
 /**
@@ -32,28 +42,4 @@ export async function getMeeting(token: string, id: string): Promise<Meeting> {
   });
 
   return (await response.json()) as Meeting;
-}
-
-/**
- * Whether the signed-in user (by email) is this meeting's owner — deduced
- * without the backend ever exposing `ownerId` over the API
- * (`MeetingResponse` deliberately hides it, see the backend's
- * `toMeetingResponse`). A meeting only ever reaches the caller as `success`
- * for its owner or a participant (`assertMeetingAccess` on the backend, see
- * the root `CLAUDE.md`) — so if the signed-in email isn't (case-
- * insensitively) one of `meeting.participants`, the caller must be the
- * owner by elimination. Used by `components/meeting-files.tsx` to decide
- * who sees the delete button for which files: the owner may delete any
- * file, a participant only their own.
- */
-export function isMeetingOwner(
-  meeting: Meeting,
-  email: string | null,
-): boolean {
-  if (!email) return false;
-
-  const normalized = email.toLowerCase();
-  return !meeting.participants.some(
-    (participant) => participant.toLowerCase() === normalized,
-  );
 }

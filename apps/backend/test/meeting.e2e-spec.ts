@@ -14,6 +14,7 @@ interface MeetingBody {
   title: string;
   date: string;
   participants: string[];
+  isOwner: boolean;
 }
 
 function uniqueEmail(): string {
@@ -184,6 +185,7 @@ describe('Meeting (e2e)', () => {
       expect(Object.keys(response.body as MeetingBody).sort()).toEqual([
         'date',
         'id',
+        'isOwner',
         'participants',
         'title',
       ]);
@@ -353,6 +355,7 @@ describe('Meeting (e2e)', () => {
       const body = response.body as MeetingBody;
       expect(body.id).toBe(createdId);
       expect(body.title).toBe(sampleMeeting().title);
+      expect(body.isOwner).toBe(true);
     });
 
     it('returns 404 when the meeting does not exist', async () => {
@@ -401,7 +404,13 @@ describe('Meeting (e2e)', () => {
         .set('Authorization', `Bearer ${participantToken}`)
         .expect(200);
 
-      expect((response.body as MeetingBody).id).toBe(createdId);
+      const body = response.body as MeetingBody;
+      expect(body.id).toBe(createdId);
+      // A participant reads the same meeting the owner does, but must not
+      // be told they're the owner — this is what
+      // components/meeting-files.tsx on the frontend uses to decide who
+      // can delete which file.
+      expect(body.isOwner).toBe(false);
     });
 
     it('matches participant email case-insensitively', async () => {
@@ -423,6 +432,30 @@ describe('Meeting (e2e)', () => {
         .get(`/meetings/${createdId}`)
         .set('Authorization', `Bearer ${participantToken}`)
         .expect(200);
+    });
+
+    it('reports isOwner: true even when the owner lists their own email as a participant', async () => {
+      // Nothing on the backend stops an owner's own email from ending up in
+      // `participants` (CreateMeetingDto doesn't check for it, and
+      // assertMeetingAccess grants access via ownerId first regardless) —
+      // isOwner has to come from ownerId, not from participants membership,
+      // or this case would wrongly read as "not the owner".
+      const { email: ownerEmail, token: ownerToken } =
+        await registerUserWithEmail();
+
+      const created = await request(app.getHttpServer())
+        .post('/meetings')
+        .set('Authorization', `Bearer ${ownerToken}`)
+        .send({ ...sampleMeeting(), participants: [ownerEmail] })
+        .expect(201);
+      const createdId = (created.body as MeetingBody).id;
+
+      const response = await request(app.getHttpServer())
+        .get(`/meetings/${createdId}`)
+        .set('Authorization', `Bearer ${ownerToken}`)
+        .expect(200);
+
+      expect((response.body as MeetingBody).isOwner).toBe(true);
     });
 
     it('returns 404 — not 500 — for an id that is not a UUID', async () => {
@@ -453,6 +486,7 @@ describe('Meeting (e2e)', () => {
       expect(fetched.body).toEqual({
         id: (created.body as MeetingBody).id,
         ...payload,
+        isOwner: true,
       });
     });
   });
