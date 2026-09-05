@@ -74,14 +74,15 @@ describe('Users (e2e)', () => {
 
     it('stores a name and an avatar path when they are set', async () => {
       const { email } = await registerUser();
+      const avatarPath = `${randomUUID()}.png`;
 
       const updated = await prisma.user.update({
         where: { email },
-        data: { name: 'Ada Lovelace', avatarPath: `${randomUUID()}.png` },
+        data: { name: 'Ada Lovelace', avatarPath },
       });
 
       expect(updated.name).toBe('Ada Lovelace');
-      expect(updated.avatarPath).toMatch(/\.png$/);
+      expect(updated.avatarPath).toBe(avatarPath);
     });
 
     it('clears the profile fields back to null', async () => {
@@ -124,6 +125,10 @@ describe('Users (e2e)', () => {
       expect(body.id).toBe(stored?.id);
       expect(body.email).toBe(email);
       expect(body.createdAt).toMatch(ISO_TIMESTAMP);
+      // Compared against the row itself, not just shape-checked: the regex
+      // alone would accept any of the row's timestamps, including the
+      // updatedAt this test's key-set assertion is trying to keep out.
+      expect(body.createdAt).toBe(stored?.createdAt.toISOString());
     });
 
     it('returns null name and avatarUrl for a user who never filled them in', async () => {
@@ -142,7 +147,7 @@ describe('Users (e2e)', () => {
     it('returns the name and an avatar URL once the profile columns are set', async () => {
       const { email, token } = await registerUser();
       const avatarPath = `${randomUUID()}.png`;
-      await prisma.user.update({
+      const stored = await prisma.user.update({
         where: { email },
         data: { name: 'Ada Lovelace', avatarPath },
       });
@@ -159,6 +164,9 @@ describe('Users (e2e)', () => {
       // than rebuilt from AVATAR_URL_PREFIX, so a change to the constant
       // shows up here as a failing test instead of silently following along.
       expect(body.avatarUrl).toBe(`/api/avatars/${avatarPath}`);
+      // The row has been written to since registration, so createdAt is the
+      // one timestamp on it that must not have moved.
+      expect(body.createdAt).toBe(stored.createdAt.toISOString());
     });
 
     it("scopes the profile to the caller's own token", async () => {
