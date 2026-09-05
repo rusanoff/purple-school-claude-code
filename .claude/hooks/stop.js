@@ -1,7 +1,8 @@
 const { execFileSync } = require('child_process');
 const fs = require('fs');
 
-const config = JSON.parse(fs.readFileSync('.claude/ralph.config.json', 'utf8'));
+const configFile = '.claude/ralph.config.json';
+const config = JSON.parse(fs.readFileSync(configFile, 'utf8'));
 
 if (!config.active) {
   process.exit(0);
@@ -73,6 +74,16 @@ if (issues.length > 0) {
 } else {
   console.log('✅ Milestone завершен. Создаём PR');
   writeCounter(0);
+
+  // Разоружаемся ДО запуска ревью: сессия ревью ниже завершится в этом же
+  // репозитории и снова вызовет этот хук — открытых Issue уже нет, так что он
+  // снова попадёт сюда и породит ещё одну сессию ревью, и так бесконечно. Счётчик
+  // эту ветку не ограничивает (здесь он как раз сбрасывается) — ограничивает флаг.
+  // Новый milestone — снова выставить active: true вручную.
+  fs.writeFileSync(
+    configFile,
+    JSON.stringify({ ...config, active: false }, null, 2) + '\n',
+  );
 
   const base = gh([
     'repo',
