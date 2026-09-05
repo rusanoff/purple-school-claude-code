@@ -36,8 +36,15 @@ if (issues.length > 0) {
 } else {
   console.log('✅ Milestone завершен. Создаём PR')
   fs.writeFileSync(counterFile, JSON.stringify({ count: 0 }))
+
+  const prUrl = execSync(
+    `gh pr create --title "feat: ${config.milestone}" --body "Closes all issues in milestone ${config.milestone}" --base main --head ${config.branch} --json url`,
+  ).toString().trim();
+
+  console.log(`🔍 Запускаем финальное ревью через Fable`);
+
   execSync(
-    `gh pr create --title "feat: ${config.milestone}" --body "Closes all issues in milestone ${config.milestone}" --base main --head ${config.branch}`,
-    { stdio: 'inherit' },
+    `claude -p "Сделай детальное код-ревью PR ${prUrl}. Проверь архитектуру, безопасность, производительность и соответствие PRD. Оставь комментарии в PR через gh cli." --model claude-fable-5`,
+    { stdio: 'inherit' }
   )
 }
