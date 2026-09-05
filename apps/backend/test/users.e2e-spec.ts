@@ -125,9 +125,12 @@ describe('Users (e2e)', () => {
       expect(body.id).toBe(stored?.id);
       expect(body.email).toBe(email);
       expect(body.createdAt).toMatch(ISO_TIMESTAMP);
-      // Compared against the row itself, not just shape-checked: the regex
-      // alone would accept any of the row's timestamps, including the
-      // updatedAt this test's key-set assertion is trying to keep out.
+      // Pinned to the row's own value rather than only shape-checked by the
+      // regex above. It does not prove createdAt isn't updatedAt in disguise:
+      // this user has just been registered, so Prisma wrote @default(now())
+      // and @updatedAt in the same statement and the two are equal. The
+      // avatar test below, which reads the timestamp before writing to the
+      // row, is what catches that swap.
       expect(body.createdAt).toBe(stored?.createdAt.toISOString());
     });
 
@@ -146,8 +149,9 @@ describe('Users (e2e)', () => {
 
     it('returns the name and an avatar URL once the profile columns are set', async () => {
       const { email, token } = await registerUser();
+      const beforeUpdate = await prisma.user.findUnique({ where: { email } });
       const avatarPath = `${randomUUID()}.png`;
-      const stored = await prisma.user.update({
+      await prisma.user.update({
         where: { email },
         data: { name: 'Ada Lovelace', avatarPath },
       });
@@ -164,25 +168,31 @@ describe('Users (e2e)', () => {
       // than rebuilt from AVATAR_URL_PREFIX, so a change to the constant
       // shows up here as a failing test instead of silently following along.
       expect(body.avatarUrl).toBe(`/api/avatars/${avatarPath}`);
-      // The row has been written to since registration, so createdAt is the
-      // one timestamp on it that must not have moved.
-      expect(body.createdAt).toBe(stored.createdAt.toISOString());
+      // This is the one place the createdAt/updatedAt swap is actually
+      // catchable: the row was written to after registration, so its two
+      // timestamps have diverged — and the value compared against was read
+      // *before* that write, so serving updatedAt (or letting createdAt move
+      // on update) fails here instead of matching a moved target.
+      expect(body.createdAt).toBe(beforeUpdate?.createdAt.toISOString());
     });
 
     it("scopes the profile to the caller's own token", async () => {
       const first = await registerUser();
       const second = await registerUser();
 
-      const [firstResponse, secondResponse] = await Promise.all([
-        request(app.getHttpServer())
-          .get('/users/me')
-          .set('Authorization', `Bearer ${first.token}`)
-          .expect(200),
-        request(app.getHttpServer())
-          .get('/users/me')
-          .set('Authorization', `Bearer ${second.token}`)
-          .expect(200),
-      ]);
+      // Sequential on purpose: supertest gives the first Test built off an
+      // unlistening app ownership of the ephemeral server and closes it when
+      // that request's own response lands, so running the two in parallel can
+      // pull the socket out from under the second one. The test only compares
+      // the two emails — it needs no concurrency.
+      const firstResponse = await request(app.getHttpServer())
+        .get('/users/me')
+        .set('Authorization', `Bearer ${first.token}`)
+        .expect(200);
+      const secondResponse = await request(app.getHttpServer())
+        .get('/users/me')
+        .set('Authorization', `Bearer ${second.token}`)
+        .expect(200);
 
       expect((firstResponse.body as UserProfileBody).email).toBe(first.email);
       expect((secondResponse.body as UserProfileBody).email).toBe(second.email);
