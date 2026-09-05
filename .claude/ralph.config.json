@@ -1,5 +1,6 @@
 {
   "milestone": "",
+  "maxIterations": 50,
   "branch": "feature/phase-4",
   "prompt": "Прочитай .claude/ralph.md и следуй правилам оттуда. Возьми следующую открытую Issue из milestone '{milestone}' и реализуй его в '{branch}'"
 }
