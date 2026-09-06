@@ -491,16 +491,43 @@ describe('Users (e2e)', () => {
         .expect(400);
     });
 
-    it("ignores a client-supplied id and renames only the caller's own row", async () => {
+    it("writes only the caller's own row, leaving other users untouched", async () => {
+      const bystander = await registerUser();
+      const caller = await registerUser();
+
+      // The security property of the route, asserted positively: this is a
+      // *successful* rename, so the handler actually runs, and the bystander's
+      // row must still be untouched afterwards. Without the second assertion a
+      // handler that renamed every row in the table would pass — the id comes
+      // from the JWT, and nothing else in this suite proves the write is
+      // scoped by it.
+      await request(app.getHttpServer())
+        .patch('/users/me')
+        .set('Authorization', `Bearer ${caller.token}`)
+        .send({ name: 'Ada Lovelace' })
+        .expect(200);
+
+      const callerRow = await prisma.user.findUnique({
+        where: { email: caller.email },
+      });
+      const bystanderRow = await prisma.user.findUnique({
+        where: { email: bystander.email },
+      });
+      expect(callerRow?.name).toBe('Ada Lovelace');
+      expect(bystanderRow?.name).toBeNull();
+    });
+
+    it('rejects a body smuggling another user’s id', async () => {
       const victim = await registerUser();
       const attacker = await registerUser();
       const victimRow = await prisma.user.findUnique({
         where: { email: victim.email },
       });
 
-      // The route takes no id — `whitelist`/`forbidNonWhitelisted` reject the
-      // smuggled one outright — but the assertion that matters is the one
-      // below: the victim's row is untouched either way.
+      // `forbidNonWhitelisted` rejects the extra field at the pipe, so the
+      // handler never runs — this pins that the route offers no way to *name*
+      // a target at all. The scoping of the write itself is the previous
+      // test's job, since a 400 proves nothing about what a handler would do.
       await request(app.getHttpServer())
         .patch('/users/me')
         .set('Authorization', `Bearer ${attacker.token}`)
