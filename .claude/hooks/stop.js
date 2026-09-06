@@ -1,79 +1,354 @@
-const { execSync } = require('child_process')
+const { execFileSync } = require('child_process')
 const fs = require('fs')
+const os = require('os')
+const path = require('path')
 
-const config = JSON.parse(fs.readFileSync('.claude/ralph.config.json', 'utf8'))
+const CONFIG_FILE = '.claude/ralph.config.json'
+const COUNTER_FILE = '.claude/ralph.iterations.json'
+
+const config = JSON.parse(fs.readFileSync(CONFIG_FILE, 'utf8'))
 
 if (!config.active) process.exit(0)
 
-const counterFile = '.claude/ralph.iterations.json'
-let counter = { count: 0, phaseIndex: 0 }
-if (fs.existsSync(counterFile)) {
-  counter = JSON.parse(fs.readFileSync(counterFile, 'utf8'))
+// A session this hook spawns inherits the hook and fires it again on exit.
+// For phase sessions that is the point — it is how the loop advances. The
+// review session must not re-enter: it would find the PR its own parent just
+// opened and merge it out from under the parent's own mergePr, advancing
+// phaseIndex twice and leaving two phases running at once.
+if (process.env.RALPH_CHILD) process.exit(0)
+
+// The repository's default branch is master, not main.
+const baseBranch = config.baseBranch || 'master'
+const mergeWaitMinutes = config.mergeWaitMinutes ?? 60
+const mergePollSeconds = config.mergePollSeconds ?? 30
+const ghRetries = config.ghRetries ?? 4
+const ghRetryDelaySeconds = config.ghRetryDelaySeconds ?? 5
+const mergeMethod = config.mergeMethod || 'squash'
+const mergeAdmin = config.mergeAdmin ?? false
+const mergeOnUnstable = config.mergeOnUnstable ?? false
+
+if (!['squash', 'merge', 'rebase'].includes(mergeMethod)) {
+  throw new Error(`mergeMethod: ожидается squash, merge или rebase, а не "${mergeMethod}"`)
 }
 
-const phase = config.phases
-  ? config.phases[counter.phaseIndex]
-  : { milestone: config.milestone, branch: config.branch }
-
-if (!phase) {
-  console.log('🎉 Все фазы завершены.')
-  process.exit(0)
-}
-
-if (counter.count >= config.maxIterations) {
-  console.log(`⛔ Лимит итераций (${config.maxIterations}) достигнут.`)
-  fs.writeFileSync(counterFile, JSON.stringify({ count: 0, phaseIndex: counter.phaseIndex }))
-  process.exit(0)
-}
-
-const issues = JSON.parse(
-  execSync(
-    `gh issue list --milestone "${phase.milestone}" --state open --json number,title`,
-  ).toString(),
+// mergeStateStatus, на которых мы готовы мержить. UNSTABLE — необязательная
+// проверка, которая ещё идёт или уже красная: по умолчанию ждём её, а не
+// мержим поверх (включается флагом mergeOnUnstable).
+const MERGEABLE_STATUSES = new Set(
+  mergeOnUnstable ? ['CLEAN', 'HAS_HOOKS', 'UNSTABLE'] : ['CLEAN', 'HAS_HOOKS'],
 )
 
-if (issues.length > 0) {
-  counter.count++
-  fs.writeFileSync(counterFile, JSON.stringify(counter))
+// Every external command goes through execFileSync with an argument array:
+// milestone names contain spaces, quotes and dashes that a shell would mangle.
+const capture = (cmd, args) => execFileSync(cmd, args, { encoding: 'utf8' }).trim()
+const run = (cmd, args) => execFileSync(cmd, args, { stdio: 'inherit' })
 
-  const next = issues[0]
-  console.log(
-    `🔄 Фаза ${counter.phaseIndex + 1} — Итерация ${counter.count}/${config.maxIterations} — Issue #${next.number}: ${next.title}`,
+const tryRun = (cmd, args) => {
+  try {
+    execFileSync(cmd, args, { stdio: 'ignore' })
+    return true
+  } catch {
+    return false
+  }
+}
+
+const sleepSeconds = (seconds) =>
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, seconds * 1000)
+
+// One blip on api.github.com used to kill the whole cycle: the hook exited and
+// nothing restarted it. Network-bound calls get a few tries with backoff.
+const withRetry = (label, fn) => {
+  for (let attempt = 1; ; attempt++) {
+    try {
+      return fn()
+    } catch (error) {
+      if (attempt >= ghRetries) throw error
+      const delay = ghRetryDelaySeconds * attempt
+      console.log(`⚠️ ${label}: попытка ${attempt}/${ghRetries} не удалась, повтор через ${delay} с...`)
+      sleepSeconds(delay)
+    }
+  }
+}
+
+const gh = (args) => withRetry(`gh ${args.slice(0, 2).join(' ')}`, () => capture('gh', args))
+
+const saveCounter = (counter) => fs.writeFileSync(COUNTER_FILE, JSON.stringify(counter))
+
+// stdin is /dev/null on purpose: the hook's own stdin holds Claude Code's JSON
+// payload, which a nested `claude -p` would read as extra prompt input.
+const runClaude = (prompt, extraArgs = [], childRole = '') =>
+  execFileSync('claude', ['-p', prompt, ...extraArgs], {
+    stdio: ['ignore', 'inherit', 'inherit'],
+    env: { ...process.env, RALPH_CHILD: childRole },
+  })
+
+// gh lists issues newest-first, but issues inside a milestone depend on each
+// other in creation order — sort ascending so we pick the actually-next one.
+const listIssues = (milestone, state) =>
+  JSON.parse(
+    gh([
+      'issue',
+      'list',
+      '--milestone',
+      milestone,
+      '--state',
+      state,
+      '--json',
+      'number,title',
+      '--limit',
+      '100',
+    ]),
+  ).sort((a, b) => a.number - b.number)
+
+const findOpenPr = (branch) => {
+  const prs = JSON.parse(
+    gh([
+      'pr',
+      'list',
+      '--head',
+      branch,
+      '--base',
+      baseBranch,
+      '--state',
+      'open',
+      '--json',
+      'number,url',
+    ]),
   )
-  console.log(`📋 Осталось: ${issues.length}`)
+  return prs.length > 0 ? prs[0] : null
+}
 
+const createPr = (phase) => {
+  withRetry('git push', () => run('git', ['push', '--set-upstream', 'origin', phase.branch]))
+
+  const closed = listIssues(phase.milestone, 'closed')
+  const body = [
+    `Фаза: ${phase.milestone}`,
+    '',
+    'PR создан Ralph Stop Hook после закрытия всех Issues милстоуна.',
+    '',
+    '## Закрытые Issues',
+    ...closed.map((issue) => `- #${issue.number} — ${issue.title}`),
+    '',
+    '🤖 Generated with [Claude Code](https://claude.com/claude-code)',
+    '',
+  ].join('\n')
+
+  const bodyFile = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'ralph-pr-')), 'body.md')
+  fs.writeFileSync(bodyFile, body)
+
+  // Not retried: a second create would collide with the PR the first one may
+  // have already opened. On failure we look the branch up before giving up —
+  // and a real failure throws, so phaseIndex never advances past a PR-less
+  // phase (handled by the catch at the bottom).
+  try {
+    run('gh', [
+      'pr',
+      'create',
+      '--base',
+      baseBranch,
+      '--head',
+      phase.branch,
+      '--title',
+      `feat: ${phase.milestone}`,
+      '--body-file',
+      bodyFile,
+    ])
+  } catch (error) {
+    const pr = findOpenPr(phase.branch)
+    if (!pr) throw error
+    console.log(`ℹ️ gh pr create отчитался ошибкой, но PR #${pr.number} создан.`)
+    return pr
+  }
+
+  const pr = findOpenPr(phase.branch)
+  if (!pr) throw new Error(`PR для ветки ${phase.branch} не найден после создания`)
+  return pr
+}
+
+// Ralph мержит свой PR сам — цикл рассчитан на работу без человека. Поэтому
+// ждём не клика по кнопке Merge, а только момента, когда GitHub сочтёт PR
+// мержабельным (сразу после создания mergeable ещё UNKNOWN несколько секунд),
+// и мержим. mergeWaitMinutes — бюджет именно на это ожидание готовности.
+const mergePr = (prNumber) => {
+  const deadline = Date.now() + mergeWaitMinutes * 60 * 1000
+
+  for (;;) {
+    const pr = JSON.parse(
+      gh(['pr', 'view', String(prNumber), '--json', 'state,mergeable,mergeStateStatus']),
+    )
+
+    if (pr.state === 'MERGED') {
+      console.log(`✅ PR #${prNumber} смержен.`)
+      return true
+    }
+    if (pr.state === 'CLOSED') {
+      console.log(`⛔ PR #${prNumber} закрыт без мержа.`)
+      return false
+    }
+    // Конфликты не обходятся ни одним способом мержа — тут нужен человек.
+    if (pr.mergeable === 'CONFLICTING') {
+      console.log(`⛔ PR #${prNumber} конфликтует с ${baseBranch} — разреши конфликты вручную.`)
+      return false
+    }
+
+    // BEHIND: репозиторий требует ветку, обновлённую до базовой. GitHub умеет
+    // подтянуть базу сам, после чего mergeStateStatus пересчитается.
+    if (pr.mergeStateStatus === 'BEHIND') {
+      console.log(`🔄 PR #${prNumber} отстал от ${baseBranch} — обновляем ветку...`)
+      tryRun('gh', ['pr', 'update-branch', String(prNumber)])
+    } else if (
+      MERGEABLE_STATUSES.has(pr.mergeStateStatus) ||
+      // BLOCKED — не хватает обязательной проверки или ревью: пройти можно
+      // только с правами админа и только если это разрешено в конфиге.
+      (mergeAdmin && pr.mergeStateStatus === 'BLOCKED')
+    ) {
+      const args = ['pr', 'merge', String(prNumber), `--${mergeMethod}`]
+      if (mergeAdmin) args.push('--admin')
+
+      try {
+        console.log(`🔀 Мержим PR #${prNumber} (${mergeMethod})...`)
+        run('gh', args)
+        console.log(`✅ PR #${prNumber} смержен.`)
+        return true
+      } catch (error) {
+        // Состояние могло измениться между чтением статуса и самим мержем —
+        // не роняем цикл, а уходим на следующий опрос.
+        console.log(`⚠️ Мерж не прошёл (${error.message}) — повторим.`)
+      }
+    } else {
+      console.log(`⏳ PR #${prNumber}: статус ${pr.mergeStateStatus || 'UNKNOWN'} — ждём...`)
+    }
+
+    if (Date.now() >= deadline) {
+      console.log(`⏳ PR #${prNumber} не удалось смержить за ${mergeWaitMinutes} мин.`)
+      return false
+    }
+    sleepSeconds(mergePollSeconds)
+  }
+}
+
+// Ветка фазы уехала в baseBranch — убираем её локально и на remote, чтобы
+// повторный запуск фазы не продолжил работу на устаревшей истории. Best-effort:
+// после squash-мержа `git branch -d` откажется её удалять, а remote-ветки может
+// уже не быть — ни то ни другое не должно ломать цикл.
+const deleteMergedBranch = (branch) => {
+  if (branch === baseBranch) return
+  tryRun('git', ['branch', '-D', branch])
+  tryRun('git', ['push', 'origin', '--delete', branch])
+}
+
+const syncBaseBranch = () => {
+  run('git', ['checkout', baseBranch])
+  withRetry('git pull', () => run('git', ['pull', '--ff-only', 'origin', baseBranch]))
+}
+
+// The next phase branches off a freshly pulled base rather than the previous
+// phase's HEAD — otherwise the previous phase's commits leak into its PR.
+// Expects syncBaseBranch() to have run: we must already be on the updated base.
+const checkoutPhaseBranch = (branch) => {
+  if (tryRun('git', ['rev-parse', '--verify', '--quiet', `refs/heads/${branch}`])) {
+    run('git', ['checkout', branch])
+    if (!tryRun('git', ['merge-base', '--is-ancestor', baseBranch, branch])) {
+      console.log(`⚠️ Ветка ${branch} уже существует и отстаёт от ${baseBranch} — проверь вручную.`)
+    }
+    return
+  }
+
+  run('git', ['checkout', '-b', branch])
+}
+
+const startPhase = (phase) => {
   const prompt = config.prompt
     .replace('{milestone}', phase.milestone)
     .replace('{branch}', phase.branch)
 
-  execSync(`claude -p "${prompt}" --max-turns ${config.maxTurns}`, { stdio: 'inherit' })
-} else {
-  console.log(`✅ Фаза ${counter.phaseIndex + 1} завершена. Создаём PR...`)
-  execSync(
-    `claude -p "Создай PR из ветки ${phase.branch} в main с названием 'feat: ${phase.milestone}'." --model claude-opus-5 --max-turns 10`,
-    { stdio: 'inherit' },
-  )
+  runClaude(prompt, ['--max-turns', String(config.maxTurns)])
+}
 
-  console.log('🔍 Ревью Fable 5.1...')
-  execSync(
-    `claude -p "Найди последний открытый PR и проведи детальное code review. Проверь архитектуру, безопасность, производительность и соответствие PRD. Оставь комментарии в PR через gh cli." --model claude-fable-5-1 --max-turns ${config.maxTurns}`,
-    { stdio: 'inherit' },
-  )
+const main = () => {
+  let counter = { count: 0, phaseIndex: 0 }
+  if (fs.existsSync(COUNTER_FILE)) {
+    counter = JSON.parse(fs.readFileSync(COUNTER_FILE, 'utf8'))
+  }
+
+  const phases = config.phases?.length
+    ? config.phases
+    : [{ milestone: config.milestone, branch: config.branch }]
+  const phase = phases[counter.phaseIndex]
+
+  if (!phase) {
+    console.log('🎉 Все фазы завершены.')
+    return
+  }
+
+  if (counter.count >= config.maxIterations) {
+    console.log(`⛔ Лимит итераций (${config.maxIterations}) достигнут.`)
+    saveCounter({ count: 0, phaseIndex: counter.phaseIndex })
+    return
+  }
+
+  const openIssues = listIssues(phase.milestone, 'open')
+
+  if (openIssues.length > 0) {
+    counter.count++
+    saveCounter(counter)
+
+    const next = openIssues[0]
+    console.log(
+      `🔄 Фаза ${counter.phaseIndex + 1} — Итерация ${counter.count}/${config.maxIterations} — Issue #${next.number}: ${next.title}`,
+    )
+    console.log(`📋 Осталось: ${openIssues.length}`)
+
+    startPhase(phase)
+    return
+  }
+
+  console.log(`✅ Фаза ${counter.phaseIndex + 1} завершена. Создаём PR...`)
+
+  let pr = findOpenPr(phase.branch)
+  if (pr) {
+    console.log(`ℹ️ PR #${pr.number} уже открыт — переиспользуем его.`)
+  } else {
+    pr = createPr(phase)
+
+    console.log('🔍 Ревью Fable 5.1...')
+    runClaude(
+      `Проведи детальное code review PR #${pr.number}. Проверь архитектуру, безопасность, производительность и соответствие PRD. Оставь комментарии в PR через gh cli.`,
+      ['--model', 'claude-fable-5-1', '--max-turns', String(config.maxTurns)],
+      'review',
+    )
+  }
+
+  if (!mergePr(pr.number)) {
+    console.log(`⏸️ Цикл остановлен: разберись с PR #${pr.number} и запусти Ralph снова.`)
+    return
+  }
 
   counter.phaseIndex++
   counter.count = 0
-  fs.writeFileSync(counterFile, JSON.stringify(counter))
+  saveCounter(counter)
 
-  const nextPhase = config.phases ? config.phases[counter.phaseIndex] : null
+  // Сначала уходим со смерженной ветки на обновлённый base: и чтобы её можно
+  // было удалить, и потому что следующая фаза всё равно ветвится оттуда.
+  syncBaseBranch()
+  deleteMergedBranch(phase.branch)
+
+  const nextPhase = phases[counter.phaseIndex]
   if (!nextPhase) {
     console.log('🎉 Все фазы завершены!')
-    process.exit(0)
+    return
   }
 
   console.log(`➡️ Фаза ${counter.phaseIndex + 1}: ${nextPhase.milestone}`)
-  const prompt = config.prompt
-    .replace('{milestone}', nextPhase.milestone)
-    .replace('{branch}', nextPhase.branch)
+  checkoutPhaseBranch(nextPhase.branch)
+  startPhase(nextPhase)
+}
 
-  execSync(`claude -p "${prompt}" --max-turns ${config.maxTurns}`, { stdio: 'inherit' })
+try {
+  main()
+} catch (error) {
+  // phaseIndex is left alone so the next run retries the interrupted step.
+  console.error(`❌ Ralph: шаг прерван — ${error.message}`)
+  process.exit(1)
 }

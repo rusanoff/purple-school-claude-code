@@ -1,4 +1,4 @@
-/** Shared display formatting, used by the dashboard and the meeting detail page. */
+/** Shared display formatting, used by the dashboard, the meeting detail page and `/profile`. */
 
 /** e.g. "Sep 1, 2026, 3:00 PM" — used everywhere a meeting's `date` is shown. */
 export function formatMeetingDate(date: string): string {
@@ -6,6 +6,16 @@ export function formatMeetingDate(date: string): string {
     dateStyle: 'medium',
     timeStyle: 'short',
   });
+}
+
+/**
+ * e.g. "Sep 1, 2026" — a calendar day with no time of day, for timestamps
+ * whose hour is noise rather than information (the profile's "Member since",
+ * from `UserProfile.createdAt`). Same locale and `medium` date style as
+ * `formatMeetingDate`, so the two read as one format with and without a time.
+ */
+export function formatDay(date: string): string {
+  return new Date(date).toLocaleDateString('en-US', { dateStyle: 'medium' });
 }
 
 const FILE_SIZE_UNITS = ['B', 'KB', 'MB', 'GB'];

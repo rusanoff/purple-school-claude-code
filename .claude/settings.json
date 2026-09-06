@@ -17,7 +17,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node .claude/hooks/stop.js"
+            "command": "node .claude/hooks/stop.js",
+            "timeout": 86400
           }
         ]
       }
