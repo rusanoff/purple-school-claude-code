@@ -3,48 +3,77 @@ const fs = require('fs')
 
 const config = JSON.parse(fs.readFileSync('.claude/ralph.config.json', 'utf8'))
 
-// Счетчик итераций
+if (!config.active) process.exit(0)
+
 const counterFile = '.claude/ralph.iterations.json'
-let counter = { count: 0 }
+let counter = { count: 0, phaseIndex: 0 }
 if (fs.existsSync(counterFile)) {
   counter = JSON.parse(fs.readFileSync(counterFile, 'utf8'))
 }
 
-if (counter.count >= config.maxIterations) {
-  console.log(`⛔ Достигнут лимит итераций (${config.maxIterations}). Ralph останавливается.`)
-  fs.writeFileSync(counterFile, JSON.stringify({ count: 0 }))
+const phase = config.phases
+  ? config.phases[counter.phaseIndex]
+  : { milestone: config.milestone, branch: config.branch }
+
+if (!phase) {
+  console.log('🎉 Все фазы завершены.')
   process.exit(0)
 }
 
-// Проверяем открытые Issues
-const output = execSync(
-  `gh issue list --milestone "${config.milestone}" --state open --json number,title`,
-).toString()
-const issues = JSON.parse(output)
+if (counter.count >= config.maxIterations) {
+  console.log(`⛔ Лимит итераций (${config.maxIterations}) достигнут.`)
+  fs.writeFileSync(counterFile, JSON.stringify({ count: 0, phaseIndex: counter.phaseIndex }))
+  process.exit(0)
+}
+
+const issues = JSON.parse(
+  execSync(
+    `gh issue list --milestone "${phase.milestone}" --state open --json number,title`,
+  ).toString(),
+)
 
 if (issues.length > 0) {
-  // Увеличиваем счетчик
   counter.count++
   fs.writeFileSync(counterFile, JSON.stringify(counter))
 
   const next = issues[0]
-  console.log(`🔄 Итерация ${counter.count}/${config.maxIterations} — Issue #${next.number}: ${next.title}`);
-
-  const prompt = config.prompt.replace('{milestone}', config.milestone);
-
-  execSync(`claude -p "${prompt}"- --max-turns ${config.maxTurns}`, { stdio: 'inherit' })
-} else {
-  console.log('✅ Milestone завершен. Создаём PR')
-  fs.writeFileSync(counterFile, JSON.stringify({ count: 0 }))
-
-  const prUrl = execSync(
-    `gh pr create --title "feat: ${config.milestone}" --body "Closes all issues in milestone ${config.milestone}" --base main --head ${config.branch} --json url`,
-  ).toString().trim();
-
-  console.log(`🔍 Запускаем финальное ревью через Fable`);
-
-  execSync(
-    `claude -p "Сделай детальное код-ревью PR ${prUrl}. Проверь архитектуру, безопасность, производительность и соответствие PRD. Оставь комментарии в PR через gh cli." --model claude-fable-5`,
-    { stdio: 'inherit' }
+  console.log(
+    `🔄 Фаза ${counter.phaseIndex + 1} — Итерация ${counter.count}/${config.maxIterations} — Issue #${next.number}: ${next.title}`,
   )
+  console.log(`📋 Осталось: ${issues.length}`)
+
+  const prompt = config.prompt
+    .replace('{milestone}', phase.milestone)
+    .replace('{branch}', phase.branch)
+
+  execSync(`claude -p "${prompt}" --max-turns ${config.maxTurns}`, { stdio: 'inherit' })
+} else {
+  console.log(`✅ Фаза ${counter.phaseIndex + 1} завершена. Создаём PR...`)
+  execSync(
+    `claude -p "Создай PR из ветки ${phase.branch} в main с названием 'feat: ${phase.milestone}'." --model claude-opus-5 --max-turns 10`,
+    { stdio: 'inherit' },
+  )
+
+  console.log('🔍 Ревью Fable 5.1...')
+  execSync(
+    `claude -p "Найди последний открытый PR и проведи детальное code review. Проверь архитектуру, безопасность, производительность и соответствие PRD. Оставь комментарии в PR через gh cli." --model claude-fable-5-1 --max-turns ${config.maxTurns}`,
+    { stdio: 'inherit' },
+  )
+
+  counter.phaseIndex++
+  counter.count = 0
+  fs.writeFileSync(counterFile, JSON.stringify(counter))
+
+  const nextPhase = config.phases ? config.phases[counter.phaseIndex] : null
+  if (!nextPhase) {
+    console.log('🎉 Все фазы завершены!')
+    process.exit(0)
+  }
+
+  console.log(`➡️ Фаза ${counter.phaseIndex + 1}: ${nextPhase.milestone}`)
+  const prompt = config.prompt
+    .replace('{milestone}', nextPhase.milestone)
+    .replace('{branch}', nextPhase.branch)
+
+  execSync(`claude -p "${prompt}" --max-turns ${config.maxTurns}`, { stdio: 'inherit' })
 }

@@ -11,6 +11,14 @@ model User {
   id            String        @id @default(uuid())
   email         String        @unique
   passwordHash  String
+  // Profile fields, both optional: users registered before this existed (and
+  // anyone who never filled them in) simply have null here.
+  name          String?
+  // Generated on-disk filename of the avatar, not the original filename, not
+  // an absolute path and not a URL — same convention as MeetingFile.path.
+  // Avatars live in their own publicly served directory, separate from the
+  // private meeting-file storage.
+  avatarPath    String?
   createdAt     DateTime      @default(now())
   updatedAt     DateTime      @updatedAt
   meetings      Meeting[]
