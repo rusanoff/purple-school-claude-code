@@ -1,11 +1,13 @@
 {
-  "active": false,
+  "active": true,
   "baseBranch": "master",
   "milestone": "Фаза 1: Профиль в модели данных и GET /users/me",
   "maxIterations": 15,
   "maxTurns": 500,
   "mergeWaitMinutes": 60,
   "mergePollSeconds": 30,
+  "ghRetries": 4,
+  "ghRetryDelaySeconds": 5,
   "prompt": "Прочитай .claude/ralph.md и следуй правилам оттуда. Возьми следующую открытую Issue из milestone '{milestone}' и реализуй его в '{branch}'",
   "phases": [
     {

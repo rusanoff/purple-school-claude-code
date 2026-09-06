@@ -14,6 +14,8 @@ if (!config.active) process.exit(0)
 const baseBranch = config.baseBranch || 'master'
 const mergeWaitMinutes = config.mergeWaitMinutes ?? 60
 const mergePollSeconds = config.mergePollSeconds ?? 30
+const ghRetries = config.ghRetries ?? 4
+const ghRetryDelaySeconds = config.ghRetryDelaySeconds ?? 5
 
 // Every external command goes through execFileSync with an argument array:
 // milestone names contain spaces, quotes and dashes that a shell would mangle.
@@ -32,15 +34,37 @@ const tryRun = (cmd, args) => {
 const sleepSeconds = (seconds) =>
   Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, seconds * 1000)
 
+// One blip on api.github.com used to kill the whole cycle: the hook exited and
+// nothing restarted it. Network-bound calls get a few tries with backoff.
+const withRetry = (label, fn) => {
+  for (let attempt = 1; ; attempt++) {
+    try {
+      return fn()
+    } catch (error) {
+      if (attempt >= ghRetries) throw error
+      const delay = ghRetryDelaySeconds * attempt
+      console.log(`⚠️ ${label}: попытка ${attempt}/${ghRetries} не удалась, повтор через ${delay} с...`)
+      sleepSeconds(delay)
+    }
+  }
+}
+
+const gh = (args) => withRetry(`gh ${args.slice(0, 2).join(' ')}`, () => capture('gh', args))
+
 const saveCounter = (counter) => fs.writeFileSync(COUNTER_FILE, JSON.stringify(counter))
 
-const runClaude = (prompt, extraArgs = []) => run('claude', ['-p', prompt, ...extraArgs])
+// stdin is /dev/null on purpose: the hook's own stdin holds Claude Code's JSON
+// payload, which a nested `claude -p` would read as extra prompt input.
+const runClaude = (prompt, extraArgs = []) =>
+  execFileSync('claude', ['-p', prompt, ...extraArgs], {
+    stdio: ['ignore', 'inherit', 'inherit'],
+  })
 
 // gh lists issues newest-first, but issues inside a milestone depend on each
 // other in creation order — sort ascending so we pick the actually-next one.
 const listIssues = (milestone, state) =>
   JSON.parse(
-    capture('gh', [
+    gh([
       'issue',
       'list',
       '--milestone',
@@ -56,7 +80,7 @@ const listIssues = (milestone, state) =>
 
 const findOpenPr = (branch) => {
   const prs = JSON.parse(
-    capture('gh', [
+    gh([
       'pr',
       'list',
       '--head',
@@ -73,7 +97,7 @@ const findOpenPr = (branch) => {
 }
 
 const createPr = (phase) => {
-  run('git', ['push', '--set-upstream', 'origin', phase.branch])
+  withRetry('git push', () => run('git', ['push', '--set-upstream', 'origin', phase.branch]))
 
   const closed = listIssues(phase.milestone, 'closed')
   const body = [
@@ -91,20 +115,29 @@ const createPr = (phase) => {
   const bodyFile = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'ralph-pr-')), 'body.md')
   fs.writeFileSync(bodyFile, body)
 
-  // A failing gh pr create exits non-zero, so execFileSync throws and phaseIndex
-  // stays put (handled by the catch at the bottom).
-  run('gh', [
-    'pr',
-    'create',
-    '--base',
-    baseBranch,
-    '--head',
-    phase.branch,
-    '--title',
-    `feat: ${phase.milestone}`,
-    '--body-file',
-    bodyFile,
-  ])
+  // Not retried: a second create would collide with the PR the first one may
+  // have already opened. On failure we look the branch up before giving up —
+  // and a real failure throws, so phaseIndex never advances past a PR-less
+  // phase (handled by the catch at the bottom).
+  try {
+    run('gh', [
+      'pr',
+      'create',
+      '--base',
+      baseBranch,
+      '--head',
+      phase.branch,
+      '--title',
+      `feat: ${phase.milestone}`,
+      '--body-file',
+      bodyFile,
+    ])
+  } catch (error) {
+    const pr = findOpenPr(phase.branch)
+    if (!pr) throw error
+    console.log(`ℹ️ gh pr create отчитался ошибкой, но PR #${pr.number} создан.`)
+    return pr
+  }
 
   const pr = findOpenPr(phase.branch)
   if (!pr) throw new Error(`PR для ветки ${phase.branch} не найден после создания`)
@@ -115,7 +148,7 @@ const waitForMerge = (prNumber) => {
   const deadline = Date.now() + mergeWaitMinutes * 60 * 1000
 
   for (;;) {
-    const { state } = JSON.parse(capture('gh', ['pr', 'view', String(prNumber), '--json', 'state']))
+    const { state } = JSON.parse(gh(['pr', 'view', String(prNumber), '--json', 'state']))
 
     if (state === 'MERGED') {
       console.log(`✅ PR #${prNumber} смержен.`)
@@ -139,7 +172,7 @@ const waitForMerge = (prNumber) => {
 // phase's HEAD — otherwise the previous phase's commits leak into its PR.
 const checkoutPhaseBranch = (branch) => {
   run('git', ['checkout', baseBranch])
-  run('git', ['pull', '--ff-only', 'origin', baseBranch])
+  withRetry('git pull', () => run('git', ['pull', '--ff-only', 'origin', baseBranch]))
 
   if (tryRun('git', ['rev-parse', '--verify', '--quiet', `refs/heads/${branch}`])) {
     run('git', ['checkout', branch])
