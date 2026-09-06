@@ -10,7 +10,7 @@ import { apiFetch } from './api';
  * optional on the backend: a user who registered before those fields existed
  * — or who simply never filled them in — reads back as `null` on both. Every
  * consumer has to render that case (initial placeholder + email) rather than
- * assume a name, see `components/avatar.tsx`.
+ * assume a name is there.
  *
  * `avatarUrl`, when set, already carries the `/api` rewrite prefix the
  * backend emits (`AVATAR_URL_PREFIX`), so it goes straight into an `<img
