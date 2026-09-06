@@ -13,8 +13,8 @@ if (!config.active) process.exit(0)
 // A session this hook spawns inherits the hook and fires it again on exit.
 // For phase sessions that is the point — it is how the loop advances. The
 // review session must not re-enter: it would find the PR its own parent just
-// opened, start a second waitForMerge nested inside the first, and on merge
-// advance phaseIndex again, leaving two phases running at once.
+// opened and merge it out from under the parent's own mergePr, advancing
+// phaseIndex twice and leaving two phases running at once.
 if (process.env.RALPH_CHILD) process.exit(0)
 
 // The repository's default branch is master, not main.
@@ -23,6 +23,20 @@ const mergeWaitMinutes = config.mergeWaitMinutes ?? 60
 const mergePollSeconds = config.mergePollSeconds ?? 30
 const ghRetries = config.ghRetries ?? 4
 const ghRetryDelaySeconds = config.ghRetryDelaySeconds ?? 5
+const mergeMethod = config.mergeMethod || 'squash'
+const mergeAdmin = config.mergeAdmin ?? false
+const mergeOnUnstable = config.mergeOnUnstable ?? false
+
+if (!['squash', 'merge', 'rebase'].includes(mergeMethod)) {
+  throw new Error(`mergeMethod: ожидается squash, merge или rebase, а не "${mergeMethod}"`)
+}
+
+// mergeStateStatus, на которых мы готовы мержить. UNSTABLE — необязательная
+// проверка, которая ещё идёт или уже красная: по умолчанию ждём её, а не
+// мержим поверх (включается флагом mergeOnUnstable).
+const MERGEABLE_STATUSES = new Set(
+  mergeOnUnstable ? ['CLEAN', 'HAS_HOOKS', 'UNSTABLE'] : ['CLEAN', 'HAS_HOOKS'],
+)
 
 // Every external command goes through execFileSync with an argument array:
 // milestone names contain spaces, quotes and dashes that a shell would mangle.
@@ -152,36 +166,87 @@ const createPr = (phase) => {
   return pr
 }
 
-const waitForMerge = (prNumber) => {
+// Ralph мержит свой PR сам — цикл рассчитан на работу без человека. Поэтому
+// ждём не клика по кнопке Merge, а только момента, когда GitHub сочтёт PR
+// мержабельным (сразу после создания mergeable ещё UNKNOWN несколько секунд),
+// и мержим. mergeWaitMinutes — бюджет именно на это ожидание готовности.
+const mergePr = (prNumber) => {
   const deadline = Date.now() + mergeWaitMinutes * 60 * 1000
 
   for (;;) {
-    const { state } = JSON.parse(gh(['pr', 'view', String(prNumber), '--json', 'state']))
+    const pr = JSON.parse(
+      gh(['pr', 'view', String(prNumber), '--json', 'state,mergeable,mergeStateStatus']),
+    )
 
-    if (state === 'MERGED') {
+    if (pr.state === 'MERGED') {
       console.log(`✅ PR #${prNumber} смержен.`)
       return true
     }
-    if (state === 'CLOSED') {
+    if (pr.state === 'CLOSED') {
       console.log(`⛔ PR #${prNumber} закрыт без мержа.`)
       return false
     }
-    if (Date.now() >= deadline) {
-      console.log(`⏳ PR #${prNumber} не смержен за ${mergeWaitMinutes} мин.`)
+    // Конфликты не обходятся ни одним способом мержа — тут нужен человек.
+    if (pr.mergeable === 'CONFLICTING') {
+      console.log(`⛔ PR #${prNumber} конфликтует с ${baseBranch} — разреши конфликты вручную.`)
       return false
     }
 
-    console.log(`⏳ Ждём мержа PR #${prNumber}...`)
+    // BEHIND: репозиторий требует ветку, обновлённую до базовой. GitHub умеет
+    // подтянуть базу сам, после чего mergeStateStatus пересчитается.
+    if (pr.mergeStateStatus === 'BEHIND') {
+      console.log(`🔄 PR #${prNumber} отстал от ${baseBranch} — обновляем ветку...`)
+      tryRun('gh', ['pr', 'update-branch', String(prNumber)])
+    } else if (
+      MERGEABLE_STATUSES.has(pr.mergeStateStatus) ||
+      // BLOCKED — не хватает обязательной проверки или ревью: пройти можно
+      // только с правами админа и только если это разрешено в конфиге.
+      (mergeAdmin && pr.mergeStateStatus === 'BLOCKED')
+    ) {
+      const args = ['pr', 'merge', String(prNumber), `--${mergeMethod}`]
+      if (mergeAdmin) args.push('--admin')
+
+      try {
+        console.log(`🔀 Мержим PR #${prNumber} (${mergeMethod})...`)
+        run('gh', args)
+        console.log(`✅ PR #${prNumber} смержен.`)
+        return true
+      } catch (error) {
+        // Состояние могло измениться между чтением статуса и самим мержем —
+        // не роняем цикл, а уходим на следующий опрос.
+        console.log(`⚠️ Мерж не прошёл (${error.message}) — повторим.`)
+      }
+    } else {
+      console.log(`⏳ PR #${prNumber}: статус ${pr.mergeStateStatus || 'UNKNOWN'} — ждём...`)
+    }
+
+    if (Date.now() >= deadline) {
+      console.log(`⏳ PR #${prNumber} не удалось смержить за ${mergeWaitMinutes} мин.`)
+      return false
+    }
     sleepSeconds(mergePollSeconds)
   }
 }
 
-// The next phase branches off a freshly pulled base rather than the previous
-// phase's HEAD — otherwise the previous phase's commits leak into its PR.
-const checkoutPhaseBranch = (branch) => {
+// Ветка фазы уехала в baseBranch — убираем её локально и на remote, чтобы
+// повторный запуск фазы не продолжил работу на устаревшей истории. Best-effort:
+// после squash-мержа `git branch -d` откажется её удалять, а remote-ветки может
+// уже не быть — ни то ни другое не должно ломать цикл.
+const deleteMergedBranch = (branch) => {
+  if (branch === baseBranch) return
+  tryRun('git', ['branch', '-D', branch])
+  tryRun('git', ['push', 'origin', '--delete', branch])
+}
+
+const syncBaseBranch = () => {
   run('git', ['checkout', baseBranch])
   withRetry('git pull', () => run('git', ['pull', '--ff-only', 'origin', baseBranch]))
+}
 
+// The next phase branches off a freshly pulled base rather than the previous
+// phase's HEAD — otherwise the previous phase's commits leak into its PR.
+// Expects syncBaseBranch() to have run: we must already be on the updated base.
+const checkoutPhaseBranch = (branch) => {
   if (tryRun('git', ['rev-parse', '--verify', '--quiet', `refs/heads/${branch}`])) {
     run('git', ['checkout', branch])
     if (!tryRun('git', ['merge-base', '--is-ancestor', baseBranch, branch])) {
@@ -255,14 +320,19 @@ const main = () => {
     )
   }
 
-  if (!waitForMerge(pr.number)) {
-    console.log(`⏸️ Цикл остановлен: смержи PR #${pr.number} и запусти Ralph снова.`)
+  if (!mergePr(pr.number)) {
+    console.log(`⏸️ Цикл остановлен: разберись с PR #${pr.number} и запусти Ralph снова.`)
     return
   }
 
   counter.phaseIndex++
   counter.count = 0
   saveCounter(counter)
+
+  // Сначала уходим со смерженной ветки на обновлённый base: и чтобы её можно
+  // было удалить, и потому что следующая фаза всё равно ветвится оттуда.
+  syncBaseBranch()
+  deleteMergedBranch(phase.branch)
 
   const nextPhase = phases[counter.phaseIndex]
   if (!nextPhase) {

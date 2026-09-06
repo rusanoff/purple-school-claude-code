@@ -1,19 +1,17 @@
 {
-  "active": true,
+  "active": false,
   "baseBranch": "master",
-  "milestone": "Фаза 1: Профиль в модели данных и GET /users/me",
   "maxIterations": 15,
   "maxTurns": 500,
   "mergeWaitMinutes": 60,
   "mergePollSeconds": 30,
+  "mergeMethod": "squash",
+  "mergeAdmin": false,
+  "mergeOnUnstable": false,
   "ghRetries": 4,
   "ghRetryDelaySeconds": 5,
   "prompt": "Прочитай .claude/ralph.md и следуй правилам оттуда. Возьми следующую открытую Issue из milestone '{milestone}' и реализуй его в '{branch}'",
   "phases": [
-    {
-      "milestone": "Фаза 2: Страница /profile (просмотр) и переиспользуемый аватар",
-      "branch": "feature/phase-5"
-    },
     {
       "milestone": "Фаза 3: Смена имени на backend",
       "branch": "feature/phase-6"
