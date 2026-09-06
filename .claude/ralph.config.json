@@ -1,5 +1,5 @@
 {
-  "active": true,
+  "active": false,
   "milestone": "Фаза 1: Профиль в модели данных и GET /users/me",
   "maxIterations": 15,
   "maxTurns": 50,
