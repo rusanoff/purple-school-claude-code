@@ -9,3 +9,10 @@ coverage/
 .idea/
 .claude/settings.local.json
 .playwright-mcp
+
+# Python bytecode from local skill scripts
+__pycache__/
+*.pyc
+
+# Ralph loop local state (counter, not source)
+.claude/ralph.iterations.json

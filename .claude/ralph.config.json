@@ -1,8 +1,48 @@
 {
   "active": false,
+  "baseBranch": "master",
   "milestone": "Фаза 1: Профиль в модели данных и GET /users/me",
   "maxIterations": 15,
-  "maxTurns": 50,
+  "maxTurns": 500,
+  "mergeWaitMinutes": 60,
+  "mergePollSeconds": 30,
   "prompt": "Прочитай .claude/ralph.md и следуй правилам оттуда. Возьми следующую открытую Issue из milestone '{milestone}' и реализуй его в '{branch}'",
-  "phases": []
+  "phases": [
+    {
+      "milestone": "Фаза 2: Страница /profile (просмотр) и переиспользуемый аватар",
+      "branch": "feature/phase-5"
+    },
+    {
+      "milestone": "Фаза 3: Смена имени на backend",
+      "branch": "feature/phase-6"
+    },
+    {
+      "milestone": "Фаза 4: Редактирование имени в UI",
+      "branch": "feature/phase-7"
+    },
+    {
+      "milestone": "Фаза 5: Аватар на backend — хранилище, публичная раздача, загрузка и удаление",
+      "branch": "feature/phase-8"
+    },
+    {
+      "milestone": "Фаза 6: Аватар в UI",
+      "branch": "feature/phase-9"
+    },
+    {
+      "milestone": "Фаза 7: Смена пароля на backend",
+      "branch": "feature/phase-10"
+    },
+    {
+      "milestone": "Фаза 8: Смена пароля в UI",
+      "branch": "feature/phase-11"
+    },
+    {
+      "milestone": "Фаза 9: Имя и аватар автора файла и участников встречи на backend",
+      "branch": "feature/phase-12"
+    },
+    {
+      "milestone": "Фаза 10: Имена и аватары на странице встречи",
+      "branch": "feature/phase-13"
+    }
+  ]
 }

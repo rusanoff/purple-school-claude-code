@@ -1,79 +1,242 @@
-const { execSync } = require('child_process')
+const { execFileSync } = require('child_process')
 const fs = require('fs')
+const os = require('os')
+const path = require('path')
 
-const config = JSON.parse(fs.readFileSync('.claude/ralph.config.json', 'utf8'))
+const CONFIG_FILE = '.claude/ralph.config.json'
+const COUNTER_FILE = '.claude/ralph.iterations.json'
+
+const config = JSON.parse(fs.readFileSync(CONFIG_FILE, 'utf8'))
 
 if (!config.active) process.exit(0)
 
-const counterFile = '.claude/ralph.iterations.json'
-let counter = { count: 0, phaseIndex: 0 }
-if (fs.existsSync(counterFile)) {
-  counter = JSON.parse(fs.readFileSync(counterFile, 'utf8'))
+// The repository's default branch is master, not main.
+const baseBranch = config.baseBranch || 'master'
+const mergeWaitMinutes = config.mergeWaitMinutes ?? 60
+const mergePollSeconds = config.mergePollSeconds ?? 30
+
+// Every external command goes through execFileSync with an argument array:
+// milestone names contain spaces, quotes and dashes that a shell would mangle.
+const capture = (cmd, args) => execFileSync(cmd, args, { encoding: 'utf8' }).trim()
+const run = (cmd, args) => execFileSync(cmd, args, { stdio: 'inherit' })
+
+const tryRun = (cmd, args) => {
+  try {
+    execFileSync(cmd, args, { stdio: 'ignore' })
+    return true
+  } catch {
+    return false
+  }
 }
 
-const phase = config.phases
-  ? config.phases[counter.phaseIndex]
-  : { milestone: config.milestone, branch: config.branch }
+const sleepSeconds = (seconds) =>
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, seconds * 1000)
 
-if (!phase) {
-  console.log('🎉 Все фазы завершены.')
-  process.exit(0)
-}
+const saveCounter = (counter) => fs.writeFileSync(COUNTER_FILE, JSON.stringify(counter))
 
-if (counter.count >= config.maxIterations) {
-  console.log(`⛔ Лимит итераций (${config.maxIterations}) достигнут.`)
-  fs.writeFileSync(counterFile, JSON.stringify({ count: 0, phaseIndex: counter.phaseIndex }))
-  process.exit(0)
-}
+const runClaude = (prompt, extraArgs = []) => run('claude', ['-p', prompt, ...extraArgs])
 
-const issues = JSON.parse(
-  execSync(
-    `gh issue list --milestone "${phase.milestone}" --state open --json number,title`,
-  ).toString(),
-)
+// gh lists issues newest-first, but issues inside a milestone depend on each
+// other in creation order — sort ascending so we pick the actually-next one.
+const listIssues = (milestone, state) =>
+  JSON.parse(
+    capture('gh', [
+      'issue',
+      'list',
+      '--milestone',
+      milestone,
+      '--state',
+      state,
+      '--json',
+      'number,title',
+      '--limit',
+      '100',
+    ]),
+  ).sort((a, b) => a.number - b.number)
 
-if (issues.length > 0) {
-  counter.count++
-  fs.writeFileSync(counterFile, JSON.stringify(counter))
-
-  const next = issues[0]
-  console.log(
-    `🔄 Фаза ${counter.phaseIndex + 1} — Итерация ${counter.count}/${config.maxIterations} — Issue #${next.number}: ${next.title}`,
+const findOpenPr = (branch) => {
+  const prs = JSON.parse(
+    capture('gh', [
+      'pr',
+      'list',
+      '--head',
+      branch,
+      '--base',
+      baseBranch,
+      '--state',
+      'open',
+      '--json',
+      'number,url',
+    ]),
   )
-  console.log(`📋 Осталось: ${issues.length}`)
+  return prs.length > 0 ? prs[0] : null
+}
 
+const createPr = (phase) => {
+  run('git', ['push', '--set-upstream', 'origin', phase.branch])
+
+  const closed = listIssues(phase.milestone, 'closed')
+  const body = [
+    `Фаза: ${phase.milestone}`,
+    '',
+    'PR создан Ralph Stop Hook после закрытия всех Issues милстоуна.',
+    '',
+    '## Закрытые Issues',
+    ...closed.map((issue) => `- #${issue.number} — ${issue.title}`),
+    '',
+    '🤖 Generated with [Claude Code](https://claude.com/claude-code)',
+    '',
+  ].join('\n')
+
+  const bodyFile = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'ralph-pr-')), 'body.md')
+  fs.writeFileSync(bodyFile, body)
+
+  // A failing gh pr create exits non-zero, so execFileSync throws and phaseIndex
+  // stays put (handled by the catch at the bottom).
+  run('gh', [
+    'pr',
+    'create',
+    '--base',
+    baseBranch,
+    '--head',
+    phase.branch,
+    '--title',
+    `feat: ${phase.milestone}`,
+    '--body-file',
+    bodyFile,
+  ])
+
+  const pr = findOpenPr(phase.branch)
+  if (!pr) throw new Error(`PR для ветки ${phase.branch} не найден после создания`)
+  return pr
+}
+
+const waitForMerge = (prNumber) => {
+  const deadline = Date.now() + mergeWaitMinutes * 60 * 1000
+
+  for (;;) {
+    const { state } = JSON.parse(capture('gh', ['pr', 'view', String(prNumber), '--json', 'state']))
+
+    if (state === 'MERGED') {
+      console.log(`✅ PR #${prNumber} смержен.`)
+      return true
+    }
+    if (state === 'CLOSED') {
+      console.log(`⛔ PR #${prNumber} закрыт без мержа.`)
+      return false
+    }
+    if (Date.now() >= deadline) {
+      console.log(`⏳ PR #${prNumber} не смержен за ${mergeWaitMinutes} мин.`)
+      return false
+    }
+
+    console.log(`⏳ Ждём мержа PR #${prNumber}...`)
+    sleepSeconds(mergePollSeconds)
+  }
+}
+
+// The next phase branches off a freshly pulled base rather than the previous
+// phase's HEAD — otherwise the previous phase's commits leak into its PR.
+const checkoutPhaseBranch = (branch) => {
+  run('git', ['checkout', baseBranch])
+  run('git', ['pull', '--ff-only', 'origin', baseBranch])
+
+  if (tryRun('git', ['rev-parse', '--verify', '--quiet', `refs/heads/${branch}`])) {
+    run('git', ['checkout', branch])
+    if (!tryRun('git', ['merge-base', '--is-ancestor', baseBranch, branch])) {
+      console.log(`⚠️ Ветка ${branch} уже существует и отстаёт от ${baseBranch} — проверь вручную.`)
+    }
+    return
+  }
+
+  run('git', ['checkout', '-b', branch])
+}
+
+const startPhase = (phase) => {
   const prompt = config.prompt
     .replace('{milestone}', phase.milestone)
     .replace('{branch}', phase.branch)
 
-  execSync(`claude -p "${prompt}" --max-turns ${config.maxTurns}`, { stdio: 'inherit' })
-} else {
-  console.log(`✅ Фаза ${counter.phaseIndex + 1} завершена. Создаём PR...`)
-  execSync(
-    `claude -p "Создай PR из ветки ${phase.branch} в main с названием 'feat: ${phase.milestone}'." --model claude-opus-5 --max-turns 10`,
-    { stdio: 'inherit' },
-  )
+  runClaude(prompt, ['--max-turns', String(config.maxTurns)])
+}
 
-  console.log('🔍 Ревью Fable 5.1...')
-  execSync(
-    `claude -p "Найди последний открытый PR и проведи детальное code review. Проверь архитектуру, безопасность, производительность и соответствие PRD. Оставь комментарии в PR через gh cli." --model claude-fable-5-1 --max-turns ${config.maxTurns}`,
-    { stdio: 'inherit' },
-  )
+const main = () => {
+  let counter = { count: 0, phaseIndex: 0 }
+  if (fs.existsSync(COUNTER_FILE)) {
+    counter = JSON.parse(fs.readFileSync(COUNTER_FILE, 'utf8'))
+  }
+
+  const phases = config.phases?.length
+    ? config.phases
+    : [{ milestone: config.milestone, branch: config.branch }]
+  const phase = phases[counter.phaseIndex]
+
+  if (!phase) {
+    console.log('🎉 Все фазы завершены.')
+    return
+  }
+
+  if (counter.count >= config.maxIterations) {
+    console.log(`⛔ Лимит итераций (${config.maxIterations}) достигнут.`)
+    saveCounter({ count: 0, phaseIndex: counter.phaseIndex })
+    return
+  }
+
+  const openIssues = listIssues(phase.milestone, 'open')
+
+  if (openIssues.length > 0) {
+    counter.count++
+    saveCounter(counter)
+
+    const next = openIssues[0]
+    console.log(
+      `🔄 Фаза ${counter.phaseIndex + 1} — Итерация ${counter.count}/${config.maxIterations} — Issue #${next.number}: ${next.title}`,
+    )
+    console.log(`📋 Осталось: ${openIssues.length}`)
+
+    startPhase(phase)
+    return
+  }
+
+  console.log(`✅ Фаза ${counter.phaseIndex + 1} завершена. Создаём PR...`)
+
+  let pr = findOpenPr(phase.branch)
+  if (pr) {
+    console.log(`ℹ️ PR #${pr.number} уже открыт — переиспользуем его.`)
+  } else {
+    pr = createPr(phase)
+
+    console.log('🔍 Ревью Fable 5.1...')
+    runClaude(
+      `Проведи детальное code review PR #${pr.number}. Проверь архитектуру, безопасность, производительность и соответствие PRD. Оставь комментарии в PR через gh cli.`,
+      ['--model', 'claude-fable-5-1', '--max-turns', String(config.maxTurns)],
+    )
+  }
+
+  if (!waitForMerge(pr.number)) {
+    console.log(`⏸️ Цикл остановлен: смержи PR #${pr.number} и запусти Ralph снова.`)
+    return
+  }
 
   counter.phaseIndex++
   counter.count = 0
-  fs.writeFileSync(counterFile, JSON.stringify(counter))
+  saveCounter(counter)
 
-  const nextPhase = config.phases ? config.phases[counter.phaseIndex] : null
+  const nextPhase = phases[counter.phaseIndex]
   if (!nextPhase) {
     console.log('🎉 Все фазы завершены!')
-    process.exit(0)
+    return
   }
 
   console.log(`➡️ Фаза ${counter.phaseIndex + 1}: ${nextPhase.milestone}`)
-  const prompt = config.prompt
-    .replace('{milestone}', nextPhase.milestone)
-    .replace('{branch}', nextPhase.branch)
+  checkoutPhaseBranch(nextPhase.branch)
+  startPhase(nextPhase)
+}
 
-  execSync(`claude -p "${prompt}" --max-turns ${config.maxTurns}`, { stdio: 'inherit' })
+try {
+  main()
+} catch (error) {
+  // phaseIndex is left alone so the next run retries the interrupted step.
+  console.error(`❌ Ralph: шаг прерван — ${error.message}`)
+  process.exit(1)
 }
