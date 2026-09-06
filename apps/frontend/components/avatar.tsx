@@ -25,8 +25,10 @@ import { Avatar } from '@heroui/react';
  * exception is needed, and its Radix primitive preloads the URL off-DOM and
  * only swaps a real `<img>` in once it has actually loaded. An avatar file
  * that is missing or was deleted therefore keeps showing the initial
- * placeholder rather than a broken-image icon, with nothing logged to the
- * console.
+ * placeholder rather than a broken-image icon. The browser still logs the
+ * failed request for the image itself the way it does for any 404 — that
+ * part is unavoidable for any element that points at a URL — but nothing
+ * here throws, renders a placeholder glyph, or needs an `onError`.
  */
 
 /**
