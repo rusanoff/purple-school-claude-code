@@ -10,6 +10,13 @@ const config = JSON.parse(fs.readFileSync(CONFIG_FILE, 'utf8'))
 
 if (!config.active) process.exit(0)
 
+// A session this hook spawns inherits the hook and fires it again on exit.
+// For phase sessions that is the point — it is how the loop advances. The
+// review session must not re-enter: it would find the PR its own parent just
+// opened, start a second waitForMerge nested inside the first, and on merge
+// advance phaseIndex again, leaving two phases running at once.
+if (process.env.RALPH_CHILD) process.exit(0)
+
 // The repository's default branch is master, not main.
 const baseBranch = config.baseBranch || 'master'
 const mergeWaitMinutes = config.mergeWaitMinutes ?? 60
@@ -55,9 +62,10 @@ const saveCounter = (counter) => fs.writeFileSync(COUNTER_FILE, JSON.stringify(c
 
 // stdin is /dev/null on purpose: the hook's own stdin holds Claude Code's JSON
 // payload, which a nested `claude -p` would read as extra prompt input.
-const runClaude = (prompt, extraArgs = []) =>
+const runClaude = (prompt, extraArgs = [], childRole = '') =>
   execFileSync('claude', ['-p', prompt, ...extraArgs], {
     stdio: ['ignore', 'inherit', 'inherit'],
+    env: { ...process.env, RALPH_CHILD: childRole },
   })
 
 // gh lists issues newest-first, but issues inside a milestone depend on each
@@ -243,6 +251,7 @@ const main = () => {
     runClaude(
       `Проведи детальное code review PR #${pr.number}. Проверь архитектуру, безопасность, производительность и соответствие PRD. Оставь комментарии в PR через gh cli.`,
       ['--model', 'claude-fable-5-1', '--max-turns', String(config.maxTurns)],
+      'review',
     )
   }
 
