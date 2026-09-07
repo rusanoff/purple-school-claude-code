@@ -45,3 +45,58 @@ export async function getUserProfile(token: string): Promise<UserProfile> {
 
   return (await response.json()) as UserProfile;
 }
+
+/**
+ * Mirrors the backend's `USER_NAME_MIN_LENGTH` / `USER_NAME_MAX_LENGTH`
+ * (`apps/backend/src/users/dto/update-user-profile.dto.ts`) so the profile
+ * form can reject an empty or over-long name before it ever reaches the
+ * network. The frontend is a separate workspace app and cannot import from
+ * the backend one, so this is a hand-kept copy, not a derivation: if those
+ * numbers change there, change them here in the same commit or the client
+ * will validate against a stale limit and surface unexplained 400s.
+ *
+ * Both bounds apply to the **trimmed** value — the backend trims in a
+ * `@Transform` before validating, so a client check on the untrimmed string
+ * would disagree with it (`'  '` passes a naive length check but is empty to
+ * the server, and a padded 100-character name would be rejected here while
+ * the server accepts it). Trim first, then measure.
+ */
+export const USER_NAME_MIN_LENGTH = 1;
+export const USER_NAME_MAX_LENGTH = 100;
+
+/** Body of `PATCH /users/me` — mirrors the backend's `UpdateUserProfileDto`.
+ * A partial profile: it names `name` alone and leaves the avatar and
+ * everything else untouched. */
+export interface UpdateProfileInput {
+  name: string;
+}
+
+/**
+ * `PATCH /users/me` — renames the signed-in user. Like `getUserProfile`, the
+ * route takes no id: the bearer token alone decides which row is written, so
+ * this can never edit someone else's profile.
+ *
+ * Returns the full updated profile, identical to what a following
+ * `GET /users/me` would return — use it to refresh the UI instead of
+ * re-fetching.
+ *
+ * `name` is sent as typed; the backend trims it before storing, so the
+ * returned profile's `name` may differ from what was passed in and is the
+ * value to render. A 400 means the trimmed name fell outside
+ * `USER_NAME_MIN_LENGTH`…`USER_NAME_MAX_LENGTH` — the client checks the same
+ * bounds first, so this is the backend's own enforcement rather than the
+ * expected path. 401/404 mean the same as on `getUserProfile` and are
+ * handled the same way (clear the token, redirect to `/login`).
+ */
+export async function updateProfile(
+  token: string,
+  { name }: UpdateProfileInput,
+): Promise<UserProfile> {
+  const response = await apiFetch('/users/me', {
+    method: 'PATCH',
+    token,
+    body: JSON.stringify({ name }),
+  });
+
+  return (await response.json()) as UserProfile;
+}
