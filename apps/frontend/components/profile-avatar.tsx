@@ -41,6 +41,8 @@ export function ProfileAvatar({
   const router = useRouter();
 
   const inputRef = useRef<HTMLInputElement>(null);
+  const pickButtonRef = useRef<HTMLButtonElement>(null);
+  const hadSelectionRef = useRef(false);
 
   // The chosen file and its preview URL are one piece of state, not two, so
   // there is never a render where the avatar shows a `blob:` URL belonging to
@@ -63,6 +65,20 @@ export function ProfileAvatar({
     const url = selection?.previewUrl;
 
     return url ? () => URL.revokeObjectURL(url) : undefined;
+  }, [selection]);
+
+  // Clearing the selection — by saving or by cancelling — unmounts the button
+  // the user is standing on, which would drop focus back to `<body>`. Put it
+  // on the control that reopens the picker, the same way `ProfileName` hands
+  // focus back to "Edit name" when its editor closes. Tracked with a ref
+  // rather than keyed on `selection` alone so the first render doesn't steal
+  // focus from wherever the page put it.
+  useEffect(() => {
+    if (!selection && hadSelectionRef.current) {
+      pickButtonRef.current?.focus();
+    }
+
+    hadSelectionRef.current = selection !== null;
   }, [selection]);
 
   const selectFile = (files: FileList | null) => {
@@ -105,9 +121,13 @@ export function ProfileAvatar({
 
     try {
       onSaved(await uploadAvatar(token, selection.file));
-      // Dropping the selection swaps the preview for the saved avatar, which
-      // is the same picture — so the only visible change is the Save/Cancel
-      // pair going away, not a flash of the old one.
+      // Dropping the selection swaps the `blob:` preview for the saved
+      // `/api/avatars/...` URL — the same picture, but a different `src`, and
+      // Radix's `Avatar` resets to its fallback whenever `src` changes, so the
+      // initial placeholder shows for however long that (already warm, and
+      // same-origin) fetch takes. Left as is rather than papering over it by
+      // holding the preview: keeping a revoked-any-moment blob on screen to
+      // hide a load would misreport which URL the page is actually showing.
       setSelection(null);
     } catch (cause) {
       // 401/404 mean the session is over, exactly as on the page's own fetch.
@@ -232,6 +252,7 @@ export function ProfileAvatar({
       ) : (
         <div className="flex max-w-56 flex-col items-center gap-1.5">
           <Button
+            ref={pickButtonRef}
             size="sm"
             variant="ghost"
             onPress={() => inputRef.current?.click()}
