@@ -44,7 +44,12 @@ export interface SavedFile {
  */
 @Injectable()
 export class MeetingFileStorageService implements OnModuleInit {
-  private readonly storageDir: string;
+  /** The effective storage directory, resolved once from `FILE_STORAGE_DIR`.
+   * Readable for the same reason `maxFileSizeBytes` is, and because
+   * `AvatarStorageService` resolves the same variable for its separation
+   * check — a test that can only see "constructing didn't throw" cannot tell
+   * whether the two still agree on what a given value means. */
+  readonly storageDir: string;
   /** The effective size limit, resolved once from `FILE_MAX_SIZE_BYTES`.
    * Readable so a test can assert what a given env value resolves *to*, not
    * merely that resolving it didn't throw — the difference between catching a
@@ -52,8 +57,19 @@ export class MeetingFileStorageService implements OnModuleInit {
   readonly maxFileSizeBytes: number;
 
   constructor(private readonly config: ConfigService) {
+    // Blank means unset, exactly as it does for `FILE_MAX_SIZE_BYTES` below
+    // and for both of `AvatarStorageService`'s variables: `??` alone would
+    // take an empty `FILE_STORAGE_DIR=` at face value and `resolve('')` it to
+    // the process cwd — the app root, next to the source tree. That is worse
+    // than a stray directory here, because `assertAvatarStorageDirIsSeparate`
+    // reads the same variable with the blank-means-unset rule: if the two
+    // disagreed, startup would certify `<cwd>/uploads` as disjoint from the
+    // publicly served avatar directory while meeting files actually landed in
+    // `<cwd>`, and that guarantee is the only thing standing between the
+    // avatar static mount and every private file.
     this.storageDir = resolve(
-      this.config.get<string>('FILE_STORAGE_DIR') ?? DEFAULT_FILE_STORAGE_DIR,
+      this.config.get<string>('FILE_STORAGE_DIR')?.trim() ||
+        DEFAULT_FILE_STORAGE_DIR,
     );
     this.maxFileSizeBytes = this.resolveMaxFileSizeBytes();
   }

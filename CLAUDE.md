@@ -15,6 +15,8 @@ The backend has an email/password → JWT auth module; the frontend consumes it 
 
 The frontend never calls the backend cross-origin. `apps/frontend/next.config.ts` rewrites `/api/:path*` to `${BACKEND_URL}/:path*` (default `http://localhost:3001`), so the browser only talks to the frontend's own origin and **the backend needs no CORS setup**. If that ever changes, both sides must change together — see `apps/frontend/CLAUDE.md`.
 
+That rewrite carries more than API calls: avatar images are served by the backend's `@fastify/static` mount at `/avatars/<filename>` and reach the browser through the same proxy. The backend's `GET /users/me` response therefore hands back `avatarUrl` with the `/api` prefix **already on it** (`/api/avatars/<filename>`), so it drops straight into an `<img src>` — the frontend must not prepend `/api` a second time, and nothing but that one response mapping (`apps/backend/src/users/interfaces/user-profile.interface.ts`) adds it. The consequence is that `avatarUrl` only resolves through this proxy, not against the backend's origin directly.
+
 ## Database
 
 Start local Postgres with `docker compose up -d` (repo root). The backend connects via its own `DATABASE_URL` (`apps/backend/.env`) and manages schema with Prisma — the backend's e2e tests hit this real database, so it must be up before `pnpm --filter backend test:e2e`. It also holds a few persistent `qa-*@example.test` users and fixture meetings, seeded once for manual/Playwright UI testing — see the "Playwright test fixtures" section of `apps/frontend/CLAUDE.md` for credentials and how to re-seed them if the `postgres_data` volume is ever wiped.

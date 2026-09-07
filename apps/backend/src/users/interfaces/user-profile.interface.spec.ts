@@ -1,5 +1,9 @@
 import { User } from '@prisma/client';
-import { toUserProfileResponse } from './user-profile.interface';
+import {
+  AVATAR_STATIC_ROUTE_PREFIX,
+  AVATAR_URL_PREFIX,
+  toUserProfileResponse,
+} from './user-profile.interface';
 
 const CREATED_AT = new Date('2026-09-05T10:20:30.000Z');
 
@@ -55,5 +59,22 @@ describe('toUserProfileResponse', () => {
       'id',
       'name',
     ]);
+  });
+});
+
+describe('avatar path prefixes', () => {
+  // The two constants split one URL between two owners, and each half is
+  // pinned to a literal here: `AVATAR_STATIC_ROUTE_PREFIX` is what
+  // `registerAvatarStatic` mounts on this backend, and the `/api` in front of
+  // it is the frontend's rewrite prefix, which nothing but the profile
+  // mapping is allowed to add. Changing either has to be a deliberate edit
+  // to this test — and to the frontend, which resolves the value as-is.
+  it('serves avatars under /avatars on the backend', () => {
+    expect(AVATAR_STATIC_ROUTE_PREFIX).toBe('/avatars');
+  });
+
+  it('adds the frontend rewrite prefix, and only it, in front of that', () => {
+    expect(AVATAR_URL_PREFIX).toBe('/api/avatars');
+    expect(AVATAR_URL_PREFIX).toBe(`/api${AVATAR_STATIC_ROUTE_PREFIX}`);
   });
 });

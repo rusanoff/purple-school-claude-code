@@ -1,3 +1,4 @@
+import { resolve } from 'node:path';
 import { ConfigService } from '@nestjs/config';
 import { MeetingFileStorageService } from './meeting-file-storage.service';
 
@@ -49,4 +50,27 @@ describe('MeetingFileStorageService — max file size resolution', () => {
       /non-negative integer/,
     );
   });
+});
+
+describe('MeetingFileStorageService — storage directory resolution', () => {
+  it('honors an explicit FILE_STORAGE_DIR', () => {
+    expect(
+      buildService({ FILE_STORAGE_DIR: '/srv/meeting-files' }).storageDir,
+    ).toBe(resolve('/srv/meeting-files'));
+  });
+
+  // Regression: `?? DEFAULT` alone would take a blank value at face value and
+  // `resolve('')` it to the process cwd. `AvatarStorageService` reads this
+  // same variable with a blank-means-unset rule when it asserts the two
+  // storage directories are disjoint, so a disagreement here would have
+  // startup certify `<cwd>/uploads` as safely separate from the publicly
+  // served avatar directory while uploads actually landed in `<cwd>`.
+  it.each(['', '   '])(
+    'treats a blank FILE_STORAGE_DIR (%p) as unset rather than as cwd',
+    (blank) => {
+      expect(buildService({ FILE_STORAGE_DIR: blank }).storageDir).toBe(
+        resolve('./uploads'),
+      );
+    },
+  );
 });

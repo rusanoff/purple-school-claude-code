@@ -110,12 +110,24 @@ export class AvatarStorageService implements OnModuleInit {
   }
 
   async onModuleInit(): Promise<void> {
-    // Nothing writes here until the first upload, but a clean environment
-    // (fresh clone, fresh e2e temp dir) has no avatar directory yet — create
-    // it up front so the first request doesn't fail on that alone. Only this
-    // one: the meeting-file directory is `MeetingFileStorageService`'s to
-    // create, and creating it from here would mask a path typo that the
-    // assertion above is meant to catch.
+    await this.ensureStorageDirectory();
+  }
+
+  /**
+   * Creates the avatar directory if it isn't there yet. Nothing writes to it
+   * until the first upload, but a clean environment (fresh clone, fresh e2e
+   * temp dir) has no such directory — create it up front so the first request
+   * doesn't fail on that alone. Only this one: the meeting-file directory is
+   * `MeetingFileStorageService`'s to create, and creating it from here would
+   * mask a path typo that `assertAvatarStorageDirIsSeparate` is meant to
+   * catch.
+   *
+   * Public, and not just an `onModuleInit` body, because `registerAvatarStatic`
+   * needs the directory to exist *before* it registers `@fastify/static` over
+   * it — that happens ahead of `app.init()`, so the lifecycle hook is too
+   * late. Idempotent (`mkdir -p`), so both callers can run.
+   */
+  async ensureStorageDirectory(): Promise<void> {
     await mkdir(this.storageDirectory, { recursive: true });
   }
 
