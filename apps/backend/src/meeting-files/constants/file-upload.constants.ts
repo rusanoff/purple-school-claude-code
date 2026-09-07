@@ -29,6 +29,16 @@ export function isAllowedMimeType(mimeType: string): boolean {
 }
 
 /**
+ * Fallback for `FILE_STORAGE_DIR`, resolved relative to cwd. Exported rather
+ * than kept private to `MeetingFileStorageService` because
+ * `AvatarStorageService` needs the *effective* meeting-file directory — the
+ * configured value or this default — to assert the publicly served avatar
+ * directory is disjoint from it. A second copy of the literal there would let
+ * the two drift and silently weaken that check.
+ */
+export const DEFAULT_FILE_STORAGE_DIR = './uploads';
+
+/**
  * Default passed to `@fastify/multipart` at plugin-registration time (see
  * `src/multipart.ts`) — only a fallback for any future route that doesn't
  * pass its own per-call `limits.fileSize`. `MeetingFileStorageService`

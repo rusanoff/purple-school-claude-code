@@ -1,23 +1,9 @@
 import { NotFoundException } from '@nestjs/common';
-import { Prisma, User } from '@prisma/client';
+import { Prisma } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
+import { TEST_USER_ID as USER_ID, userRow } from '../testing/user-row.fixture';
 import { UpdateUserProfileCommand } from './update-user-profile.command';
 import { UpdateUserProfileHandler } from './update-user-profile.handler';
-
-const USER_ID = 'a3f1c0de-0000-4000-8000-000000000001';
-
-function userRow(overrides: Partial<User> = {}): User {
-  return {
-    id: USER_ID,
-    email: 'ada@example.com',
-    passwordHash: '$2b$10$notarealhashatall',
-    name: null,
-    avatarPath: null,
-    createdAt: new Date('2026-09-05T10:20:30.000Z'),
-    updatedAt: new Date('2026-09-06T10:20:30.000Z'),
-    ...overrides,
-  };
-}
 
 describe('UpdateUserProfileHandler', () => {
   let update: jest.Mock;

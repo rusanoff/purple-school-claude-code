@@ -1,3 +1,8 @@
 # Local file storage for uploaded meeting files (FILE_STORAGE_DIR default) —
 # never commit user-uploaded content.
 /uploads/
+
+# Local file storage for uploaded avatars (AVATAR_STORAGE_DIR default) —
+# a sibling of /uploads/, never nested inside it: this one is served
+# publicly by @fastify/static, /uploads/ must never be.
+/uploads-avatars/

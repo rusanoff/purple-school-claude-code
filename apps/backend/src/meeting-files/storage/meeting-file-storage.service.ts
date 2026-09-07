@@ -6,9 +6,11 @@ import { pipeline } from 'node:stream/promises';
 import { BadRequestException, Injectable, OnModuleInit } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import type { FastifyRequest } from 'fastify';
-import { isAllowedMimeType } from '../constants/file-upload.constants';
+import {
+  DEFAULT_FILE_STORAGE_DIR,
+  isAllowedMimeType,
+} from '../constants/file-upload.constants';
 
-const DEFAULT_STORAGE_DIR = './uploads';
 const DEFAULT_MAX_FILE_SIZE_BYTES = 50 * 1024 * 1024; // 50MB
 
 // Only a short alnum extension is kept from the original filename; anything
@@ -42,12 +44,32 @@ export interface SavedFile {
  */
 @Injectable()
 export class MeetingFileStorageService implements OnModuleInit {
-  private readonly storageDir: string;
-  private readonly maxFileSizeBytes: number;
+  /** The effective storage directory, resolved once from `FILE_STORAGE_DIR`.
+   * Readable for the same reason `maxFileSizeBytes` is, and because
+   * `AvatarStorageService` resolves the same variable for its separation
+   * check — a test that can only see "constructing didn't throw" cannot tell
+   * whether the two still agree on what a given value means. */
+  readonly storageDir: string;
+  /** The effective size limit, resolved once from `FILE_MAX_SIZE_BYTES`.
+   * Readable so a test can assert what a given env value resolves *to*, not
+   * merely that resolving it didn't throw — the difference between catching a
+   * silently-installed 0-byte limit and not. */
+  readonly maxFileSizeBytes: number;
 
   constructor(private readonly config: ConfigService) {
+    // Blank means unset, exactly as it does for `FILE_MAX_SIZE_BYTES` below
+    // and for both of `AvatarStorageService`'s variables: `??` alone would
+    // take an empty `FILE_STORAGE_DIR=` at face value and `resolve('')` it to
+    // the process cwd — the app root, next to the source tree. That is worse
+    // than a stray directory here, because `assertAvatarStorageDirIsSeparate`
+    // reads the same variable with the blank-means-unset rule: if the two
+    // disagreed, startup would certify `<cwd>/uploads` as disjoint from the
+    // publicly served avatar directory while meeting files actually landed in
+    // `<cwd>`, and that guarantee is the only thing standing between the
+    // avatar static mount and every private file.
     this.storageDir = resolve(
-      this.config.get<string>('FILE_STORAGE_DIR') ?? DEFAULT_STORAGE_DIR,
+      this.config.get<string>('FILE_STORAGE_DIR')?.trim() ||
+        DEFAULT_FILE_STORAGE_DIR,
     );
     this.maxFileSizeBytes = this.resolveMaxFileSizeBytes();
   }
@@ -155,7 +177,9 @@ export class MeetingFileStorageService implements OnModuleInit {
    * silently coercing an invalid or zero value to the default would hide a
    * real misconfiguration (including "0" meaning "reject every upload"). */
   private resolveMaxFileSizeBytes(): number {
-    const raw = this.config.get<string>('FILE_MAX_SIZE_BYTES');
+    // Trimmed first: `Number('  ')` is 0, which would pass the integer guard
+    // below and silently install a reject-everything limit.
+    const raw = this.config.get<string>('FILE_MAX_SIZE_BYTES')?.trim();
     if (raw === undefined || raw === '') {
       return DEFAULT_MAX_FILE_SIZE_BYTES;
     }
