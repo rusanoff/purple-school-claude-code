@@ -12,6 +12,7 @@ import {
   deleteAvatar,
   MAX_AVATAR_SIZE_MB,
   uploadAvatar,
+  validateAvatar,
   type UserProfile,
 } from '@/lib/users';
 
@@ -27,6 +28,14 @@ import {
  * the exact component that will show it afterwards — same circle, same size,
  * same cropping — instead of an approximation that can differ from the
  * result.
+ *
+ * A picked file is checked by `validateAvatar` before anything is uploaded,
+ * so an unsupported type or an over-sized image is refused without a request
+ * — and without a preview, since previewing a file that can never be saved
+ * would be showing the user a result they aren't going to get. That rejection
+ * and a failure from the server share one `danger` `Alert`: to the user they
+ * say the same thing (the picture isn't stored, here's why), and only one of
+ * them ever has the preview on screen to sit under.
  *
  * `onSaved` hands the updated profile back to the page for the same reason
  * `ProfileName` does: `POST /users/me/avatar` — and `DELETE`, which answers
@@ -61,6 +70,10 @@ export function ProfileAvatar({
   const [isDragging, setIsDragging] = useState(false);
   const [isPending, setIsPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Which action last succeeded, as one value rather than a flag per outcome:
+  // a save and a removal can't both be the most recent thing that happened,
+  // and two booleans could claim they were.
+  const [notice, setNotice] = useState<'saved' | 'removed' | null>(null);
 
   // Removal keeps its own three pieces of state rather than sharing the
   // upload's: the two never run at once (the Remove button only exists while
@@ -70,7 +83,6 @@ export function ProfileAvatar({
   const [isRemoveOpen, setIsRemoveOpen] = useState(false);
   const [isRemoving, setIsRemoving] = useState(false);
   const [removeError, setRemoveError] = useState<string | null>(null);
-  const [isRemoved, setIsRemoved] = useState(false);
 
   // `URL.createObjectURL` pins the file's bytes in memory until the URL is
   // revoked, so every preview has to be released — when the selection is
@@ -129,8 +141,27 @@ export function ProfileAvatar({
       return;
     }
 
+    // Rejected before a byte is sent, per the same reasoning as the
+    // meeting-file dropzone's `validateFile` call: the type and size
+    // `validateAvatar` checks mirror the ones the backend enforces (see
+    // `lib/users.ts`), so a file that fails here would come back a 400 anyway
+    // — after the user waited for it to upload. Never the source of truth,
+    // though: the server re-checks regardless, which is what `handleSave`'s
+    // own error path is still there for.
+    const rejection = validateAvatar(picked);
+
+    if (rejection) {
+      // A previous selection, if there is one, is deliberately kept — a bad
+      // second pick is no reason to throw away a good first one the user
+      // hasn't saved yet. That can leave this message next to a preview of a
+      // *different* file, which is why it names the file it is about.
+      setError(`${picked.name} — ${rejection}`);
+      setNotice(null);
+      return;
+    }
+
     setError(null);
-    setIsRemoved(false);
+    setNotice(null);
     setSelection({ file: picked, previewUrl: URL.createObjectURL(picked) });
   };
 
@@ -162,6 +193,7 @@ export function ProfileAvatar({
       // holding the preview: keeping a revoked-any-moment blob on screen to
       // hide a load would misreport which URL the page is actually showing.
       setSelection(null);
+      setNotice('saved');
     } catch (cause) {
       // 401/404 mean the session is over, exactly as on the page's own fetch.
       if (
@@ -205,7 +237,7 @@ export function ProfileAvatar({
       // the resulting render knows this removal is the one that moved focus.
       justRemovedRef.current = true;
       onSaved(updated);
-      setIsRemoved(true);
+      setNotice('removed');
       setIsRemoveOpen(false);
     } catch (cause) {
       // 401/404 mean the session is over, exactly as on the page's own fetch.
@@ -279,14 +311,18 @@ export function ProfileAvatar({
       />
 
       {/*
-        A removal is otherwise announced by nothing at all: the picture is
-        replaced by the initial and "Remove photo" disappears, both of which
-        are silent to a screen reader, and focus lands on a button whose label
-        merely changed from "Change" to "Upload". Same live region as
-        `ProfileName`'s "Name updated" — rendered unconditionally and at a
-        fixed position so React keeps the node mounted, since a region that
-        appears together with its content is announced unreliably — and
-        `polite` for the same reason, the change is already on screen.
+        Neither outcome is otherwise announced at all. A removal replaces the
+        picture with the initial and takes "Remove photo" away, both silent to
+        a screen reader, and leaves focus on a button whose label merely
+        changed from "Change" to "Upload"; a save swaps one image for another
+        and puts the same two controls back, which is if anything quieter. So
+        both report here, through one region — they are alternatives, never
+        simultaneous, and a second region would only add a place for a stale
+        one of the two to linger. Same live region as `ProfileName`'s "Name
+        updated" — rendered unconditionally and at a fixed position so React
+        keeps the node mounted, since a region that appears together with its
+        content is announced unreliably — and `polite` for the same reason,
+        the change is already on screen.
 
         Empty, it is `sr-only` rather than a bare empty element: this is a
         child of a `gap-3` flex column, where a zero-height item is still an
@@ -302,11 +338,56 @@ export function ProfileAvatar({
       */}
       <p
         aria-live="polite"
-        className={isRemoved ? 'text-center text-xs font-medium' : 'sr-only'}
+        className={notice ? 'text-center text-xs font-medium' : 'sr-only'}
         role="status"
       >
-        {isRemoved ? 'Photo removed.' : ''}
+        {notice === 'saved' && 'Photo updated.'}
+        {notice === 'removed' && 'Photo removed.'}
       </p>
+
+      {/*
+        One Alert for both ways an avatar fails to get stored — a file this
+        component refused to send, and a request the backend refused — because
+        the two say the same thing to the user (the picture isn't saved, here
+        is why) and only one of them has a preview to sit under: a rejected
+        file produces no selection, so a message living inside the preview
+        branch below would have nowhere to render at exactly the moment it is
+        needed. Hence here, above the branch, rather than in it.
+
+        A `danger` `Alert` rather than the small red paragraph this replaces,
+        matching the failed name save one component over: with no preview
+        around it, a line of red text is not obviously about the photo at all.
+
+        `role="alert"`, because after a failed save the button that failed
+        keeps focus and its label goes straight back from "Saving…" to "Save
+        photo" — without an announcement a screen reader user is told nothing
+        about why the picture still isn't saved. Focus is not moved to it the
+        way `ProfileName` moves focus to its own: that one sits above a field
+        the user may have scrolled past, this one is a few pixels from the
+        control that was just pressed.
+
+        `wrap-anywhere` on the description because a rejection names the file
+        it rejected, and a file name has no spaces to break at.
+
+        `max-w-56`, the same cap as everything else in this column, even
+        though the Alert spends ~60px of that on its indicator and padding
+        and a two-sentence rejection ends up several lines tall. Tried 64
+        (256px) for a more comfortable measure and reverted it: this column
+        is `shrink-0`, so its widest child sets its width, and the extra 32px
+        came straight out of the heading next to it — the `<h1>` started
+        wrapping mid-email on a 1280px viewport for as long as the error was
+        up. A slightly narrower error beats a card that reflows around it.
+      */}
+      {error && (
+        <Alert className="max-w-56" role="alert" status="danger">
+          <Alert.Indicator />
+          <Alert.Content>
+            <Alert.Description className="wrap-anywhere">
+              {error}
+            </Alert.Description>
+          </Alert.Content>
+        </Alert>
+      )}
 
       {selection ? (
         <div className="flex max-w-56 flex-col items-center gap-2">
@@ -321,19 +402,6 @@ export function ProfileAvatar({
           <p className="text-muted text-center text-xs">
             Preview — not saved yet
           </p>
-
-          {/*
-            `role="alert"` rather than a plain paragraph: the button that
-            failed keeps focus and its label goes straight back from
-            "Saving…" to "Save photo", so without an announcement a screen
-            reader user is told nothing at all about why the picture is
-            still not saved.
-          */}
-          {error && (
-            <p className="text-danger text-center text-xs" role="alert">
-              {error}
-            </p>
-          )}
 
           <div className="flex flex-wrap justify-center gap-2">
             <Button
@@ -386,7 +454,7 @@ export function ProfileAvatar({
                 variant="ghost"
                 onPress={() => {
                   setRemoveError(null);
-                  setIsRemoved(false);
+                  setNotice(null);
                   setIsRemoveOpen(true);
                 }}
               >
