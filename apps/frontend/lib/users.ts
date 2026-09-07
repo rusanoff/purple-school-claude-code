@@ -64,6 +64,34 @@ export async function getUserProfile(token: string): Promise<UserProfile> {
 export const USER_NAME_MIN_LENGTH = 1;
 export const USER_NAME_MAX_LENGTH = 100;
 
+/**
+ * Client-side pre-check for a display name about to be saved — returns a
+ * human-readable rejection reason, or `null` if the name passes. Same role
+ * as `validateFile` in `lib/files.ts`: a faster, friendlier rejection than a
+ * round-trip, never the source of truth (the backend re-validates
+ * regardless).
+ *
+ * Measures the trimmed value, exactly as the backend does, so this and the
+ * server can't disagree: a whitespace-only name is rejected here rather than
+ * passing a raw length check and coming back a 400, and a name padded to
+ * just over the maximum isn't rejected here while the server would accept
+ * it. Callers should validate through this rather than comparing a raw
+ * `.length` against the constants above.
+ */
+export function validateName(name: string): string | null {
+  const trimmed = name.trim();
+
+  if (trimmed.length < USER_NAME_MIN_LENGTH) {
+    return 'Name cannot be empty';
+  }
+
+  if (trimmed.length > USER_NAME_MAX_LENGTH) {
+    return `Name is too long (max ${USER_NAME_MAX_LENGTH} characters)`;
+  }
+
+  return null;
+}
+
 /** Body of `PATCH /users/me` — mirrors the backend's `UpdateUserProfileDto`.
  * A partial profile: it names `name` alone and leaves the avatar and
  * everything else untouched. */
@@ -80,13 +108,14 @@ export interface UpdateProfileInput {
  * `GET /users/me` would return — use it to refresh the UI instead of
  * re-fetching.
  *
- * `name` is sent as typed; the backend trims it before storing, so the
- * returned profile's `name` may differ from what was passed in and is the
- * value to render. A 400 means the trimmed name fell outside
- * `USER_NAME_MIN_LENGTH`…`USER_NAME_MAX_LENGTH` — the client checks the same
- * bounds first, so this is the backend's own enforcement rather than the
- * expected path. 401/404 mean the same as on `getUserProfile` and are
- * handled the same way (clear the token, redirect to `/login`).
+ * `name` is trimmed before it is sent — the backend trims it anyway, and
+ * doing it here too means the value that was validated by `validateName` is
+ * the value that gets stored, so the returned profile's `name` matches what
+ * the caller checked. A 400 means the trimmed name fell outside
+ * `USER_NAME_MIN_LENGTH`…`USER_NAME_MAX_LENGTH`; `validateName` catches that
+ * first, so this is the backend's own enforcement rather than the expected
+ * path. 401/404 mean the same as on `getUserProfile` and are handled the
+ * same way (clear the token, redirect to `/login`).
  */
 export async function updateProfile(
   token: string,
@@ -95,7 +124,7 @@ export async function updateProfile(
   const response = await apiFetch('/users/me', {
     method: 'PATCH',
     token,
-    body: JSON.stringify({ name }),
+    body: JSON.stringify({ name: name.trim() }),
   });
 
   return (await response.json()) as UserProfile;
