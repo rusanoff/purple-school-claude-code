@@ -56,7 +56,7 @@ curl -s -X POST http://localhost:3001/meetings -H "Authorization: Bearer $OWNER_
   -d '{"title":"QA Retro","date":"2026-09-08T15:30:00.000Z","participants":["qa-participant@example.test"]}'
 ```
 
-Every fixture user is seeded with `name: null` and `avatarUrl: null`, so logging in as any of them exercises the _no name, no avatar_ profile: the initial placeholder and the email standing in for the heading. **`/profile` can now write that `name`** (avatar upload is still a later phase) — pressing "Add name" as a `qa-*` user permanently changes what this table describes, and `PATCH /users/me` can't put it back, since the DTO's minimum length is 1 and there is no clear-the-name route. Restore it in the database instead:
+Every fixture user is seeded with `name: null` and `avatarUrl: null`, so logging in as any of them exercises the _no name, no avatar_ profile: the initial placeholder and the email standing in for the heading. **`/profile` can now write both** — pressing "Add name" or saving a picked photo as a `qa-*` user permanently changes what this table describes. The avatar is the recoverable one: `DELETE /users/me/avatar` (the profile's own "Remove photo", or a `curl`) puts `avatarUrl` back to `null` and deletes the file. The name is not — `PATCH /users/me` can't clear it, since the DTO's minimum length is 1 and there is no clear-the-name route — so restore that one in the database instead:
 
 ```bash
 docker compose exec -T postgres psql -U postgres -d purple_school \
