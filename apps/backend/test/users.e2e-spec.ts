@@ -27,6 +27,17 @@ function uniqueEmail(): string {
   return `test-${randomUUID()}@example.com`;
 }
 
+/**
+ * `ValidationPipe` reports every failed constraint as a string in `message`,
+ * which is an array when validation fails and a plain string for the
+ * hand-thrown exceptions elsewhere in this suite. Narrowed here so the
+ * assertions can read the strings without repeating the cast.
+ */
+function validationMessages(body: unknown): string[] {
+  const { message } = body as { message: string[] | string };
+  return Array.isArray(message) ? message : [message];
+}
+
 describe('Users (e2e)', () => {
   let app: INestApplication<App>;
   let prisma: PrismaService;
@@ -246,6 +257,347 @@ describe('Users (e2e)', () => {
       await request(app.getHttpServer())
         .get('/users/me')
         .set('Authorization', `Bearer ${forged}`)
+        .expect(401);
+    });
+  });
+
+  describe('PATCH /users/me', () => {
+    // The DTO's bounds are spelled out here as literals rather than imported
+    // from `UpdateUserProfileDto`, for the same reason the avatar URL prefix
+    // is above: importing them would make the test follow a changed limit
+    // silently, and these numbers are a published part of the API contract
+    // the frontend mirrors. Changing them must break a test.
+    const MAX_LENGTH = 100;
+
+    it("changes the signed-in user's name and returns the updated profile", async () => {
+      const { email, token } = await registerUser();
+      const stored = await prisma.user.findUnique({ where: { email } });
+
+      const response = await request(app.getHttpServer())
+        .patch('/users/me')
+        .set('Authorization', `Bearer ${token}`)
+        .send({ name: 'Ada Lovelace' })
+        .expect(200);
+
+      const body = response.body as UserProfileBody;
+      // Same key set as GET /users/me: the response is the full profile, so a
+      // client that just renamed itself never has to re-fetch — and the
+      // password hash must not leak through this route either.
+      expect(Object.keys(body).sort()).toEqual([
+        'avatarUrl',
+        'createdAt',
+        'email',
+        'id',
+        'name',
+      ]);
+      expect(body.name).toBe('Ada Lovelace');
+      expect(body.id).toBe(stored?.id);
+      expect(body.email).toBe(email);
+      // Read before the write, so a createdAt that silently moves on update
+      // (or an updatedAt served in its place) fails here.
+      expect(body.createdAt).toBe(stored?.createdAt.toISOString());
+    });
+
+    it('persists the new name so a following GET /users/me returns it', async () => {
+      const { token } = await registerUser();
+
+      await request(app.getHttpServer())
+        .patch('/users/me')
+        .set('Authorization', `Bearer ${token}`)
+        .send({ name: 'Ada Lovelace' })
+        .expect(200);
+
+      const response = await request(app.getHttpServer())
+        .get('/users/me')
+        .set('Authorization', `Bearer ${token}`)
+        .expect(200);
+
+      expect((response.body as UserProfileBody).name).toBe('Ada Lovelace');
+    });
+
+    it('trims surrounding whitespace before storing the name', async () => {
+      const { email, token } = await registerUser();
+
+      const response = await request(app.getHttpServer())
+        .patch('/users/me')
+        .set('Authorization', `Bearer ${token}`)
+        .send({ name: '  Ada Lovelace  ' })
+        .expect(200);
+
+      expect((response.body as UserProfileBody).name).toBe('Ada Lovelace');
+      // Asserted against the row too, not only the response: the trim has to
+      // happen before persistence, not on the way out.
+      const stored = await prisma.user.findUnique({ where: { email } });
+      expect(stored?.name).toBe('Ada Lovelace');
+    });
+
+    it('renames an already-named user', async () => {
+      const { email, token } = await registerUser();
+      await prisma.user.update({
+        where: { email },
+        data: { name: 'Ada Lovelace' },
+      });
+
+      const response = await request(app.getHttpServer())
+        .patch('/users/me')
+        .set('Authorization', `Bearer ${token}`)
+        .send({ name: 'Grace Hopper' })
+        .expect(200);
+
+      expect((response.body as UserProfileBody).name).toBe('Grace Hopper');
+    });
+
+    it('leaves the avatar untouched — the body is a partial profile', async () => {
+      const { email, token } = await registerUser();
+      const avatarPath = `${randomUUID()}.png`;
+      await prisma.user.update({ where: { email }, data: { avatarPath } });
+
+      const response = await request(app.getHttpServer())
+        .patch('/users/me')
+        .set('Authorization', `Bearer ${token}`)
+        .send({ name: 'Ada Lovelace' })
+        .expect(200);
+
+      expect((response.body as UserProfileBody).avatarUrl).toBe(
+        `/api/avatars/${avatarPath}`,
+      );
+      const stored = await prisma.user.findUnique({ where: { email } });
+      expect(stored?.avatarPath).toBe(avatarPath);
+    });
+
+    it('accepts a single-character name', async () => {
+      const { token } = await registerUser();
+
+      const response = await request(app.getHttpServer())
+        .patch('/users/me')
+        .set('Authorization', `Bearer ${token}`)
+        .send({ name: 'A' })
+        .expect(200);
+
+      expect((response.body as UserProfileBody).name).toBe('A');
+    });
+
+    it('accepts a name of exactly the maximum length', async () => {
+      const { token } = await registerUser();
+      const name = 'a'.repeat(MAX_LENGTH);
+
+      const response = await request(app.getHttpServer())
+        .patch('/users/me')
+        .set('Authorization', `Bearer ${token}`)
+        .send({ name })
+        .expect(200);
+
+      expect((response.body as UserProfileBody).name).toBe(name);
+    });
+
+    it('rejects an empty name with a message naming the length rule', async () => {
+      const { email, token } = await registerUser();
+
+      const response = await request(app.getHttpServer())
+        .patch('/users/me')
+        .set('Authorization', `Bearer ${token}`)
+        .send({ name: '' })
+        .expect(400);
+
+      // The frontend renders these strings verbatim, so a bare 400 is not
+      // enough: the body must say which field failed and why.
+      expect(validationMessages(response.body)).toContainEqual(
+        expect.stringContaining('name must be longer than or equal to 1'),
+      );
+      const stored = await prisma.user.findUnique({ where: { email } });
+      expect(stored?.name).toBeNull();
+    });
+
+    it('rejects a whitespace-only name — it is empty once trimmed', async () => {
+      const { email, token } = await registerUser();
+
+      const response = await request(app.getHttpServer())
+        .patch('/users/me')
+        .set('Authorization', `Bearer ${token}`)
+        .send({ name: '   ' })
+        .expect(400);
+
+      expect(validationMessages(response.body)).toContainEqual(
+        expect.stringContaining('name must be longer than or equal to 1'),
+      );
+      // The point of trimming before validating: blanks must not be stored.
+      const stored = await prisma.user.findUnique({ where: { email } });
+      expect(stored?.name).toBeNull();
+    });
+
+    it('rejects a name one character over the maximum', async () => {
+      const { email, token } = await registerUser();
+
+      const response = await request(app.getHttpServer())
+        .patch('/users/me')
+        .set('Authorization', `Bearer ${token}`)
+        .send({ name: 'a'.repeat(MAX_LENGTH + 1) })
+        .expect(400);
+
+      expect(validationMessages(response.body)).toContainEqual(
+        expect.stringContaining(
+          `name must be shorter than or equal to ${MAX_LENGTH}`,
+        ),
+      );
+      const stored = await prisma.user.findUnique({ where: { email } });
+      expect(stored?.name).toBeNull();
+    });
+
+    it('accepts a name that only fits once its padding is trimmed off', async () => {
+      const { token } = await registerUser();
+
+      // Trimming happens before the length check, so padding can neither push
+      // a valid name over the limit nor sneak an over-long one under it. This
+      // is the second half of that: the raw string is longer than the limit
+      // but its trimmed content is not, and it must be accepted.
+      const response = await request(app.getHttpServer())
+        .patch('/users/me')
+        .set('Authorization', `Bearer ${token}`)
+        .send({ name: `  ${'a'.repeat(MAX_LENGTH)}  ` })
+        .expect(200);
+
+      expect((response.body as UserProfileBody).name).toBe(
+        'a'.repeat(MAX_LENGTH),
+      );
+    });
+
+    it('rejects a body with no name at all', async () => {
+      const { token } = await registerUser();
+
+      await request(app.getHttpServer())
+        .patch('/users/me')
+        .set('Authorization', `Bearer ${token}`)
+        .send({})
+        .expect(400);
+    });
+
+    it('rejects a name that is not a string', async () => {
+      const { token } = await registerUser();
+
+      await request(app.getHttpServer())
+        .patch('/users/me')
+        .set('Authorization', `Bearer ${token}`)
+        .send({ name: 42 })
+        .expect(400);
+    });
+
+    it('rejects a body carrying an unknown field', async () => {
+      const { token } = await registerUser();
+
+      await request(app.getHttpServer())
+        .patch('/users/me')
+        .set('Authorization', `Bearer ${token}`)
+        .send({ name: 'Ada Lovelace', avatarUrl: '/api/avatars/evil.png' })
+        .expect(400);
+    });
+
+    it("writes only the caller's own row, leaving other users untouched", async () => {
+      const bystander = await registerUser();
+      const caller = await registerUser();
+
+      // The security property of the route, asserted positively: this is a
+      // *successful* rename, so the handler actually runs, and the bystander's
+      // row must still be untouched afterwards. Without the second assertion a
+      // handler that renamed every row in the table would pass — the id comes
+      // from the JWT, and nothing else in this suite proves the write is
+      // scoped by it.
+      await request(app.getHttpServer())
+        .patch('/users/me')
+        .set('Authorization', `Bearer ${caller.token}`)
+        .send({ name: 'Ada Lovelace' })
+        .expect(200);
+
+      const callerRow = await prisma.user.findUnique({
+        where: { email: caller.email },
+      });
+      const bystanderRow = await prisma.user.findUnique({
+        where: { email: bystander.email },
+      });
+      expect(callerRow?.name).toBe('Ada Lovelace');
+      expect(bystanderRow?.name).toBeNull();
+    });
+
+    it('rejects a body smuggling another user’s id', async () => {
+      const victim = await registerUser();
+      const attacker = await registerUser();
+      const victimRow = await prisma.user.findUnique({
+        where: { email: victim.email },
+      });
+
+      // `forbidNonWhitelisted` rejects the extra field at the pipe, so the
+      // handler never runs — this pins that the route offers no way to *name*
+      // a target at all. The scoping of the write itself is the previous
+      // test's job, since a 400 proves nothing about what a handler would do.
+      await request(app.getHttpServer())
+        .patch('/users/me')
+        .set('Authorization', `Bearer ${attacker.token}`)
+        .send({ name: 'Mallory', id: victimRow?.id })
+        .expect(400);
+
+      const victimAfter = await prisma.user.findUnique({
+        where: { email: victim.email },
+      });
+      expect(victimAfter?.name).toBeNull();
+    });
+
+    it('404s when the user row was deleted after the token was issued', async () => {
+      const { email, token } = await registerUser();
+      await prisma.user.delete({ where: { email } });
+
+      const response = await request(app.getHttpServer())
+        .patch('/users/me')
+        .set('Authorization', `Bearer ${token}`)
+        .send({ name: 'Ada Lovelace' })
+        .expect(404);
+
+      expect((response.body as { message: string }).message).toBe(
+        'User not found',
+      );
+    });
+
+    it('rejects a request without an Authorization header', async () => {
+      await request(app.getHttpServer())
+        .patch('/users/me')
+        .send({ name: 'Ada Lovelace' })
+        .expect(401);
+    });
+
+    it('rejects an Authorization header without the Bearer scheme', async () => {
+      const { token } = await registerUser();
+
+      await request(app.getHttpServer())
+        .patch('/users/me')
+        .set('Authorization', token)
+        .send({ name: 'Ada Lovelace' })
+        .expect(401);
+    });
+
+    it('rejects a malformed bearer token', async () => {
+      await request(app.getHttpServer())
+        .patch('/users/me')
+        .set('Authorization', 'Bearer not-a-real-jwt')
+        .send({ name: 'Ada Lovelace' })
+        .expect(401);
+    });
+
+    it('rejects a well-formed token signed with a different secret', async () => {
+      const forged = await new JwtService({
+        secret: 'definitely-not-the-app-secret',
+      }).signAsync({ sub: randomUUID(), email: uniqueEmail() });
+
+      await request(app.getHttpServer())
+        .patch('/users/me')
+        .set('Authorization', `Bearer ${forged}`)
+        .send({ name: 'Ada Lovelace' })
+        .expect(401);
+    });
+
+    it('checks the token before the body — an unauthenticated bad body is still 401', async () => {
+      // Order matters: a 400 here would tell an anonymous caller that their
+      // payload was the only thing wrong with the request.
+      await request(app.getHttpServer())
+        .patch('/users/me')
+        .send({ name: '' })
         .expect(401);
     });
   });
