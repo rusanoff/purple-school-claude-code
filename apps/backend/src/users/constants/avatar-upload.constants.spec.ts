@@ -1,6 +1,7 @@
 import { resolve, sep } from 'node:path';
 import {
   assertAvatarStorageDirIsSeparate,
+  avatarExtensionForMimeType,
   DEFAULT_AVATAR_MAX_SIZE_BYTES,
   DEFAULT_AVATAR_STORAGE_DIR,
   isAllowedAvatarMimeType,
@@ -41,6 +42,41 @@ describe('isAllowedAvatarMimeType', () => {
     expect(isAllowedAvatarMimeType('')).toBe(false);
     expect(isAllowedAvatarMimeType('image')).toBe(false);
     expect(isAllowedAvatarMimeType('image/png; charset=utf-8')).toBe(false);
+  });
+});
+
+describe('avatarExtensionForMimeType', () => {
+  it('maps every allowed type to a browser-servable extension', () => {
+    expect(avatarExtensionForMimeType('image/jpeg')).toBe('.jpg');
+    expect(avatarExtensionForMimeType('image/png')).toBe('.png');
+    expect(avatarExtensionForMimeType('image/webp')).toBe('.webp');
+  });
+
+  it('matches MIME types case-insensitively, like the allowlist check', () => {
+    expect(avatarExtensionForMimeType('Image/JPEG')).toBe('.jpg');
+  });
+
+  // Every allowed type must have an extension and vice versa — the two are
+  // the same table, so neither can grow an entry the other lacks.
+  it('covers exactly the types the allowlist accepts', () => {
+    for (const mimeType of ['image/jpeg', 'image/png', 'image/webp']) {
+      expect(isAllowedAvatarMimeType(mimeType)).toBe(true);
+      expect(() => avatarExtensionForMimeType(mimeType)).not.toThrow();
+    }
+  });
+
+  // Loud failure, not a `.bin` fallback: getting here means a caller skipped
+  // `isAllowedAvatarMimeType`, and writing an unservable file would hide it.
+  it('throws for a type that is not on the allowlist', () => {
+    expect(() => avatarExtensionForMimeType('image/svg+xml')).toThrow(
+      /not on the avatar allowlist/,
+    );
+    expect(() => avatarExtensionForMimeType('application/pdf')).toThrow(
+      /not on the avatar allowlist/,
+    );
+    expect(() => avatarExtensionForMimeType('')).toThrow(
+      /not on the avatar allowlist/,
+    );
   });
 });
 
@@ -118,6 +154,19 @@ describe('assertAvatarStorageDirIsSeparate', () => {
     ).toThrow(/AVATAR_STORAGE_DIR/);
     expect(() =>
       assertAvatarStorageDirIsSeparate('./uploads/avatars/..', './uploads'),
+    ).toThrow(/AVATAR_STORAGE_DIR/);
+  });
+
+  // On a case-insensitive filesystem these are one directory; on a
+  // case-sensitive one they are two and this over-rejects, which is the
+  // intended direction for a check whose failure mode is publishing every
+  // private meeting file.
+  it('rejects two spellings that differ only in case', () => {
+    expect(() =>
+      assertAvatarStorageDirIsSeparate('/srv/Uploads', '/srv/uploads'),
+    ).toThrow(/AVATAR_STORAGE_DIR/);
+    expect(() =>
+      assertAvatarStorageDirIsSeparate('/srv/UPLOADS/avatars', '/srv/uploads'),
     ).toThrow(/AVATAR_STORAGE_DIR/);
   });
 

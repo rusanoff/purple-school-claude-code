@@ -24,6 +24,14 @@ describe('MeetingFileStorageService — max file size resolution', () => {
     expect(() => buildService({ FILE_MAX_SIZE_BYTES: '0' })).not.toThrow();
   });
 
+  // Regression: `Number('  ')` is 0, so a whitespace-only value would pass
+  // the integer guard and silently reject every upload.
+  it('treats a whitespace-only value as unset', () => {
+    expect(buildService({ FILE_MAX_SIZE_BYTES: '   ' }).maxFileSizeBytes).toBe(
+      50 * 1024 * 1024,
+    );
+  });
+
   it('throws for a negative value instead of silently using the default', () => {
     expect(() => buildService({ FILE_MAX_SIZE_BYTES: '-1' })).toThrow(
       /non-negative integer/,
