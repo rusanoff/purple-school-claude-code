@@ -323,6 +323,15 @@ function ProfileName({
       className="flex w-full min-w-0 flex-1 flex-col gap-4"
       onSubmit={handleSubmit}
     >
+      {/*
+        Edit mode takes over the slot the `<h1>` occupies, so it has to carry
+        a heading of its own — this is the page's only one, and dropping it
+        while the form is open would leave heading navigation with nothing to
+        land on. It names the mode rather than repeating the name being
+        edited, which is already in the field below.
+      */}
+      <h1 className="text-lg font-semibold tracking-tight">Edit your name</h1>
+
       {error && (
         <Alert
           className="outline-none"
@@ -349,6 +358,10 @@ function ProfileName({
         // offering it as the value to edit would invite saving it as one.
         defaultValue={profile.name ?? ''}
         name="name"
+        // Any edit makes a previous failure stale, exactly as on the register
+        // form — a red banner still asserting the old reason while the user is
+        // already fixing it is worse than no banner.
+        onChange={() => setError((previous) => (previous ? null : previous))}
       >
         <Label>Display name</Label>
         <Input autoFocus className="min-w-0" placeholder="Your name" />
