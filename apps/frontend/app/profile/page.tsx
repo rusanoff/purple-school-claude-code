@@ -4,6 +4,7 @@ import {
   Alert,
   Button,
   Card,
+  Description,
   FieldError,
   Form,
   Input,
@@ -24,7 +25,13 @@ import {
 } from '@/components/icons';
 import { ApiError, clearAccessToken, getAccessToken } from '@/lib/auth';
 import { formatDay } from '@/lib/format';
-import { getUserProfile, updateProfile, type UserProfile } from '@/lib/users';
+import {
+  getUserProfile,
+  updateProfile,
+  USER_NAME_MAX_LENGTH,
+  validateName,
+  type UserProfile,
+} from '@/lib/users';
 
 /**
  * The outcome of fetching the signed-in user's own profile, as one
@@ -243,6 +250,14 @@ function ProfileName({
   const handleSubmit = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
 
+    // `isPending` disables the Save button, but this form has a single text
+    // field, so the browser still submits it implicitly on Enter — without
+    // this guard a second Enter fires an overlapping `PATCH /users/me` whose
+    // response could land after the first and win.
+    if (isPending) {
+      return;
+    }
+
     const { name } = Object.fromEntries(
       new FormData(event.currentTarget),
     ) as Record<'name', string>;
@@ -350,6 +365,7 @@ function ProfileName({
 
       <TextField
         fullWidth
+        isRequired
         // Prefilled with the name currently on the profile — `defaultValue`
         // rather than a controlled value, so the field is seeded once when
         // edit mode opens and the user's keystrokes own it from then on. A
@@ -362,9 +378,27 @@ function ProfileName({
         // form — a red banner still asserting the old reason while the user is
         // already fixing it is worse than no banner.
         onChange={() => setError((previous) => (previous ? null : previous))}
+        // The same bounds the backend enforces, checked before the request
+        // rather than after a 400 — `validateName` measures the trimmed value
+        // exactly as the server does (see `lib/users.ts`), so this can't
+        // reject a name the backend would take, or pass one it wouldn't.
+        // Returning it from `validate` puts the reason in `FieldError` and
+        // lets the `Form` block the submit, so `handleSubmit` never runs for
+        // an invalid name. `isRequired` is what covers the plain-empty case
+        // with the browser's own message; `validate` still owns
+        // whitespace-only, which satisfies `required` but is empty once
+        // trimmed.
+        validate={validateName}
       >
         <Label>Display name</Label>
         <Input autoFocus className="min-w-0" placeholder="Your name" />
+        {/*
+          The limit is stated up front rather than only after a rejection —
+          same as the register form's password hint. There is deliberately no
+          `maxLength` on the input to go with it: silently truncating a pasted
+          name is a worse answer than telling the user it is too long.
+        */}
+        <Description>Up to {USER_NAME_MAX_LENGTH} characters.</Description>
         <FieldError />
       </TextField>
 

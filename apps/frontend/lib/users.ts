@@ -71,6 +71,11 @@ export const USER_NAME_MAX_LENGTH = 100;
  * round-trip, never the source of truth (the backend re-validates
  * regardless).
  *
+ * The reasons are worded as instructions ("Enter your name.") rather than
+ * verdicts ("Name cannot be empty"), matching the auth forms' field errors —
+ * this is rendered in a `FieldError` on the same kind of `Form`, and a field
+ * error that says what to do beats one that only says what is wrong.
+ *
  * Measures the trimmed value, exactly as the backend does, so this and the
  * server can't disagree: a whitespace-only name is rejected here rather than
  * passing a raw length check and coming back a 400, and a name padded to
@@ -82,11 +87,11 @@ export function validateName(name: string): string | null {
   const trimmed = name.trim();
 
   if (trimmed.length < USER_NAME_MIN_LENGTH) {
-    return 'Name cannot be empty';
+    return 'Enter your name.';
   }
 
   if (trimmed.length > USER_NAME_MAX_LENGTH) {
-    return `Name is too long (max ${USER_NAME_MAX_LENGTH} characters)`;
+    return `Name must be at most ${USER_NAME_MAX_LENGTH} characters.`;
   }
 
   return null;
