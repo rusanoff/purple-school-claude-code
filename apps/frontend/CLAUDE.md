@@ -60,7 +60,7 @@ Every fixture user is seeded with `name: null` and `avatarUrl: null`, so logging
 
 ```bash
 docker compose exec -T postgres psql -U postgres -d purple_school \
-  -c "UPDATE \"User\" SET name = NULL WHERE email LIKE 'qa-%@example.test';"
+  -c "UPDATE users SET name = NULL WHERE email LIKE 'qa-%@example.test';"
 ```
 
 To see the states that do have a name or a picture — and the error/loading states, which a healthy backend won't produce on demand — stub the response instead of touching the database: `page.route('**/api/users/me', ...)` via `browser_run_code_unsafe`, fulfilling with whatever `UserProfile` shape the state needs (a `name`, an `avatarUrl` plus a matching `**/api/avatars/**` route serving a real image, a 500 for the retryable error, a 401/404 for the redirect, a delayed fulfil for the spinner). Keep that to verification only — the DB stays clean, so the fixtures keep meaning what this table says they mean.
@@ -75,7 +75,3 @@ Any change that affects the UI (pages, components, styling, layout, copy shown t
 2. **Review it with the `ui-ux-pro-max` skill.** Invoke the skill and apply its guidance to the change (visual hierarchy, spacing, typography, colour/contrast, accessibility, responsive behaviour, interaction states). Fix what it surfaces, then re-verify visually per step 1. If you consciously deviate from a recommendation, say why in your summary.
 
 Report the task as done only after both steps have actually run, and state in the summary what you rendered and what the skill review changed.
-
-```
-
-```
