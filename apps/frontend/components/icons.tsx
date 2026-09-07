@@ -351,3 +351,21 @@ export function TrashIcon() {
     </svg>
   );
 }
+
+export function PencilIcon() {
+  return (
+    <svg
+      aria-hidden="true"
+      className="size-4"
+      fill="none"
+      stroke="currentColor"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      strokeWidth={1.6}
+      viewBox="0 0 24 24"
+    >
+      <path d="M4 20h4.5L19 9.5a2.12 2.12 0 0 0-3-3L5.5 17v3Z" />
+      <path d="m14.5 8 3 3" />
+    </svg>
+  );
+}
