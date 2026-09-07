@@ -29,8 +29,11 @@ describe('ClearUserAvatarHandler', () => {
       new ClearUserAvatarCommand(TEST_USER_ID),
     );
 
+    // The `where` carries the stored filename as well as the id: the row is
+    // what makes this request the one allowed to remove that file, so a
+    // concurrent write that already moved it on must make this update miss.
     expect(update).toHaveBeenCalledWith({
-      where: { id: TEST_USER_ID },
+      where: { id: TEST_USER_ID, avatarPath: STORED_FILENAME },
       data: { avatarPath: null },
     });
     expect(deleteAvatar).toHaveBeenCalledWith(STORED_FILENAME);
@@ -78,6 +81,9 @@ describe('ClearUserAvatarHandler', () => {
   });
 
   it('throws NotFoundException when the row disappears between the read and the update', async () => {
+    findUnique
+      .mockResolvedValueOnce({ avatarPath: STORED_FILENAME })
+      .mockResolvedValueOnce(null);
     update.mockRejectedValue(
       new Prisma.PrismaClientKnownRequestError('Record to update not found', {
         code: 'P2025',

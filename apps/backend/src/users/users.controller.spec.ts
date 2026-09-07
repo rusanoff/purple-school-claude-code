@@ -1,5 +1,5 @@
 import { Readable } from 'node:stream';
-import { BadRequestException } from '@nestjs/common';
+import { BadRequestException, Logger } from '@nestjs/common';
 import { CommandBus, QueryBus } from '@nestjs/cqrs';
 import type { FastifyRequest } from 'fastify';
 import { AuthUser } from '../auth/interfaces/auth-user.interface';
@@ -192,6 +192,23 @@ describe('UsersController', () => {
         controller.uploadAvatar(CALLER, multipartRequest()),
       ).rejects.toBe(failure);
       expect(deleteAvatar).toHaveBeenCalledWith(SAVED_FILENAME);
+    });
+
+    // The cleanup is compensation for a failure that already happened —
+    // letting an `rm` problem escape would hide the real cause behind an
+    // opaque 500 and skip the rethrow entirely.
+    it('still reports the original failure when the cleanup itself fails', async () => {
+      const warn = jest.spyOn(Logger.prototype, 'warn').mockImplementation();
+      const failure = new Error('user row vanished');
+      executeCommand.mockRejectedValue(failure);
+      deleteAvatar.mockRejectedValue(new Error('EBUSY'));
+
+      await expect(
+        controller.uploadAvatar(CALLER, multipartRequest()),
+      ).rejects.toBe(failure);
+      expect(warn).toHaveBeenCalled();
+
+      warn.mockRestore();
     });
   });
 

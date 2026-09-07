@@ -16,18 +16,21 @@ import { UsersController } from './users.controller';
  * of the app graph (registered in AppModule).
  *
  * `UsersController` is its only HTTP surface, and only for the caller's own
- * profile. AuthModule is imported for the JwtModule + JwtAuthGuard that route
- * is protected with — the same wiring MeetingModule uses, and not a cycle:
+ * profile — reading and updating it, and setting or clearing its avatar.
+ * AuthModule is imported for the JwtModule + JwtAuthGuard those routes
+ * are protected with — the same wiring MeetingModule uses, and not a cycle:
  * AuthModule reaches this module through the bus, never by importing it.
  *
  * `AvatarStorageService` is registered here as an ordinary provider, not
  * dispatched through the bus: disk IO on a stream is not a message/result
  * exchange, the same reasoning that has MeetingModule inject
- * `MeetingFileStorageService` directly. Nothing injects it yet — it is
- * registered now rather than alongside its first caller because its
- * constructor is what asserts the publicly served avatar directory is
- * disjoint from the private meeting-file one, and that check is only worth
- * anything if it runs on every startup.
+ * `MeetingFileStorageService` directly. `UsersController` injects it to write
+ * an uploaded image (and to clean that image up if persisting it fails), and
+ * both avatar command handlers inject it to remove the file a write replaces.
+ * It is registered here rather than exported because nothing outside this
+ * module has any business writing to the avatar directory; its constructor is
+ * also what asserts that directory is disjoint from the private meeting-file
+ * one, a check only worth anything if it runs on every startup.
  */
 @Module({
   imports: [CqrsModule, AuthModule],

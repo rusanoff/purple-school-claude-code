@@ -6,6 +6,7 @@ import {
   Get,
   HttpCode,
   HttpStatus,
+  Logger,
   Patch,
   Post,
   Req,
@@ -27,6 +28,8 @@ import { AvatarStorageService } from './storage/avatar-storage.service';
 @Controller('users')
 @UseGuards(JwtAuthGuard)
 export class UsersController {
+  private readonly logger = new Logger(UsersController.name);
+
   constructor(
     private readonly commandBus: CommandBus,
     private readonly queryBus: QueryBus,
@@ -117,7 +120,18 @@ export class UsersController {
       // The file is already on disk. If persisting it fails — the user row
       // was deleted mid-request, the database is down — remove it rather than
       // leave a file no row references and nothing will ever come back for.
-      await this.avatarStorage.deleteAvatar(saved.path);
+      //
+      // Cleanup failures are logged, never rethrown: this is the compensating
+      // action for `error`, and letting an `rm` problem escape would replace
+      // the real cause (a clean 404 for a deleted row, say) with an opaque
+      // 500, on top of skipping the `throw` below entirely.
+      try {
+        await this.avatarStorage.deleteAvatar(saved.path);
+      } catch (cleanupError) {
+        this.logger.warn(
+          `Failed to remove the orphaned avatar file "${saved.path}" after a failed upload by user ${user.userId}: ${String(cleanupError)}`,
+        );
+      }
       throw error;
     }
   }

@@ -1,4 +1,4 @@
-import { Logger, NotFoundException } from '@nestjs/common';
+import { ConflictException, Logger, NotFoundException } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
 import { AvatarStorageService } from '../storage/avatar-storage.service';
@@ -8,6 +8,18 @@ import { SetUserAvatarHandler } from './set-user-avatar.handler';
 
 const PREVIOUS_FILENAME = '1111111111111111111111111111111a.png';
 const NEW_FILENAME = '2222222222222222222222222222222b.webp';
+
+/** What Prisma raises when the compare-and-set `where` matches no row —
+ * either the row is gone, or another write changed the avatar first. */
+function notFoundOnUpdate(): Prisma.PrismaClientKnownRequestError {
+  return new Prisma.PrismaClientKnownRequestError(
+    'Record to update not found',
+    {
+      code: 'P2025',
+      clientVersion: '0.0.0',
+    },
+  );
+}
 
 describe('SetUserAvatarHandler', () => {
   let findUnique: jest.Mock;
@@ -34,7 +46,7 @@ describe('SetUserAvatarHandler', () => {
     // authorization story — a user can only ever point their own row at a
     // file they just uploaded.
     expect(update).toHaveBeenCalledWith({
-      where: { id: TEST_USER_ID },
+      where: { id: TEST_USER_ID, avatarPath: null },
       data: { avatarPath: NEW_FILENAME },
     });
     expect(profile).toEqual({
@@ -105,20 +117,69 @@ describe('SetUserAvatarHandler', () => {
     expect(deleteAvatar).not.toHaveBeenCalled();
   });
 
-  // The row can also disappear in the gap between that read and the update —
-  // Prisma reports it as P2025, which has to end up as the same 404 rather
-  // than a raw 500.
+  // The row can also disappear in the gap between that read and the update.
+  // The compare-and-set reports that as P2025 — the same code a lost race
+  // gets — so it is the re-read that tells the two apart, and this one has to
+  // end up as the same 404 rather than a raw 500.
   it('throws NotFoundException when the row disappears between the read and the update', async () => {
-    update.mockRejectedValue(
-      new Prisma.PrismaClientKnownRequestError('Record to update not found', {
-        code: 'P2025',
-        clientVersion: '0.0.0',
-      }),
-    );
+    findUnique
+      .mockResolvedValueOnce({ avatarPath: null })
+      .mockResolvedValueOnce(null);
+    update.mockRejectedValue(notFoundOnUpdate());
 
     await expect(
       handler.execute(new SetUserAvatarCommand(TEST_USER_ID, NEW_FILENAME)),
     ).rejects.toBeInstanceOf(NotFoundException);
+  });
+
+  // Losing the compare-and-set means a concurrent write moved the row on
+  // between this request's read and its update, so the previous filename it
+  // was about to delete is no longer the one stored — re-read and compare
+  // against the new one instead of deleting a file this request doesn't own.
+  it('re-reads and retries against the new previous filename after losing the race', async () => {
+    const RACED_FILENAME = '3333333333333333333333333333333c.jpg';
+    findUnique
+      .mockResolvedValueOnce({ avatarPath: PREVIOUS_FILENAME })
+      .mockResolvedValueOnce({ avatarPath: RACED_FILENAME });
+    update
+      .mockRejectedValueOnce(notFoundOnUpdate())
+      .mockResolvedValue(userRow({ avatarPath: NEW_FILENAME }));
+
+    await handler.execute(new SetUserAvatarCommand(TEST_USER_ID, NEW_FILENAME));
+
+    expect(update).toHaveBeenLastCalledWith({
+      where: { id: TEST_USER_ID, avatarPath: RACED_FILENAME },
+      data: { avatarPath: NEW_FILENAME },
+    });
+    // The file the losing attempt read is now someone else's to remove — only
+    // the write that actually replaced `RACED_FILENAME` may delete it.
+    expect(deleteAvatar).toHaveBeenCalledTimes(1);
+    expect(deleteAvatar).toHaveBeenCalledWith(RACED_FILENAME);
+  });
+
+  // Retrying forever would let a client hold a request open indefinitely, and
+  // writing unconditionally would orphan the very file the compare-and-set
+  // exists to keep track of.
+  it('gives up with a ConflictException when every attempt loses the race', async () => {
+    findUnique.mockResolvedValue({ avatarPath: PREVIOUS_FILENAME });
+    update.mockRejectedValue(notFoundOnUpdate());
+
+    await expect(
+      handler.execute(new SetUserAvatarCommand(TEST_USER_ID, NEW_FILENAME)),
+    ).rejects.toBeInstanceOf(ConflictException);
+    expect(deleteAvatar).not.toHaveBeenCalled();
+  });
+
+  // The guard against deleting the file just written, rather than the one it
+  // replaced. Unreachable through the routes (`saveAvatar` never reuses a
+  // name), which is exactly why it needs a test — nothing else would notice
+  // the guard going away.
+  it('does not delete the stored file when the path written is the one already there', async () => {
+    findUnique.mockResolvedValue({ avatarPath: NEW_FILENAME });
+
+    await handler.execute(new SetUserAvatarCommand(TEST_USER_ID, NEW_FILENAME));
+
+    expect(deleteAvatar).not.toHaveBeenCalled();
   });
 
   it('rethrows any other Prisma failure untouched', async () => {
