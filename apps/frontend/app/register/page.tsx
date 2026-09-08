@@ -19,7 +19,7 @@ import { Brand } from '@/components/brand';
 import { CheckIcon, EnvelopeIcon, EyeIcon, LockIcon } from '@/components/icons';
 import { ApiError, register, saveAccessToken } from '@/lib/auth';
 
-/** Matches the backend's `@MinLength(6)` on `AuthCredentialsDto.password`. */
+/** Mirrors the backend's `PASSWORD_MIN_LENGTH` (`auth/dto/auth-credentials.dto.ts`). */
 const MIN_PASSWORD_LENGTH = 6;
 /**
  * Loosely mirrors the backend's `@IsEmail()`: a local part, then one or more
