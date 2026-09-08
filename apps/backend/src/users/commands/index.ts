@@ -1,3 +1,4 @@
+import { ChangePasswordHandler } from './change-password.handler';
 import { ClearUserAvatarHandler } from './clear-user-avatar.handler';
 import { CreateUserHandler } from './create-user.handler';
 import { SetUserAvatarHandler } from './set-user-avatar.handler';
@@ -8,4 +9,5 @@ export const CommandHandlers = [
   UpdateUserProfileHandler,
   SetUserAvatarHandler,
   ClearUserAvatarHandler,
+  ChangePasswordHandler,
 ];

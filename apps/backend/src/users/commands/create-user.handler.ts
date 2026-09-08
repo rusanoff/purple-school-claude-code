@@ -2,10 +2,9 @@ import { ConflictException } from '@nestjs/common';
 import { CommandHandler, ICommandHandler } from '@nestjs/cqrs';
 import * as bcrypt from 'bcryptjs';
 import { PrismaService } from '../../prisma/prisma.service';
+import { PASSWORD_SALT_ROUNDS } from '../constants/password-hashing.constants';
 import { UserRecord } from '../interfaces/user-record.interface';
 import { CreateUserCommand } from './create-user.command';
-
-const SALT_ROUNDS = 10;
 
 @CommandHandler(CreateUserCommand)
 export class CreateUserHandler implements ICommandHandler<CreateUserCommand> {
@@ -17,7 +16,7 @@ export class CreateUserHandler implements ICommandHandler<CreateUserCommand> {
       throw new ConflictException('Email is already registered');
     }
 
-    const passwordHash = await bcrypt.hash(password, SALT_ROUNDS);
+    const passwordHash = await bcrypt.hash(password, PASSWORD_SALT_ROUNDS);
     const user = await this.prisma.user.create({
       data: { email, passwordHash },
     });
