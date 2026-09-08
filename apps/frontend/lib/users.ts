@@ -194,9 +194,15 @@ export const MAX_AVATAR_SIZE_MB = Math.floor(
  *
  * Worded as verdicts ("Unsupported image type: …"), like `validateFile` and
  * unlike `validateName`'s instructions: this is rejected file feedback shown
- * next to the upload zone, not a `FieldError` on a text input. The reason
- * names the accepted types, since unlike the meeting-file allowlist this one
- * is short enough to state.
+ * next to the upload zone, not a `FieldError` on a text input. Each verdict is
+ * then followed by the way out of it — the accepted types, a smaller file —
+ * because these render in a `danger` `Alert` that replaces the whole upload
+ * affordance's feedback, and an alert that only says what is wrong leaves the
+ * user to guess the fix. (`validateFile`'s messages are terser: they sit in an
+ * upload queue row beside a dropzone that states its own limits, so the next
+ * step is already on screen next to them.) Naming the accepted types is
+ * affordable here only because, unlike the meeting-file allowlist, this one is
+ * three entries long.
  */
 export function validateAvatar(file: File): string | null {
   // Checked before the type, because a 0-byte file's reported type is guessed
@@ -216,7 +222,7 @@ export function validateAvatar(file: File): string | null {
   }
 
   if (file.size > MAX_AVATAR_SIZE_BYTES) {
-    return `Image is too large (max ${MAX_AVATAR_SIZE_MB}MB)`;
+    return `Image is too large (max ${MAX_AVATAR_SIZE_MB}MB). Choose a smaller image.`;
   }
 
   return null;

@@ -129,15 +129,28 @@ export function ProfileAvatar({
     const [picked] = Array.from(files ?? []);
 
     // A cancelled OS file picker fires `change` with an empty list — keep
-    // whatever was already selected rather than silently discarding it.
-    //
+    // whatever was already selected rather than silently discarding it. This
+    // one is the only silent return here: nothing was picked, so there is
+    // nothing to report.
+    if (!picked) {
+      return;
+    }
+
     // A pick landing mid-upload is refused for a sharper reason: the request
     // already carries the previous file, so swapping the preview under it
     // would leave the card showing one image and the server storing another
     // the moment that request comes back. The Save button is already
     // `isPending` while this is true, so the only ways in are the drop zone
     // and a picker opened before the save started.
-    if (!picked || isPending) {
+    //
+    // Said out loud, and deliberately left on screen after the save finishes:
+    // dropping a file on the circle and getting no preview, then "Photo
+    // updated." a moment later, reads as that file having been the one saved.
+    // It wasn't, so the message names it and asks for it again.
+    if (isPending) {
+      setError(
+        `${picked.name} — another photo was still saving. Pick it again.`,
+      );
       return;
     }
 
@@ -453,6 +466,11 @@ export function ProfileAvatar({
                 size="sm"
                 variant="ghost"
                 onPress={() => {
+                  // `error` is cleared alongside the dialog's own, because it
+                  // belongs to the upload half of this component: leaving a
+                  // rejected-file message up would put it directly above
+                  // "Photo removed." and read as the removal having failed.
+                  setError(null);
                   setRemoveError(null);
                   setNotice(null);
                   setIsRemoveOpen(true);
