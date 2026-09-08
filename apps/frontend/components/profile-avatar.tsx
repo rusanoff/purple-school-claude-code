@@ -143,10 +143,13 @@ export function ProfileAvatar({
     // `isPending` while this is true, so the only ways in are the drop zone
     // and a picker opened before the save started.
     //
-    // Said out loud, and deliberately left on screen after the save finishes:
-    // dropping a file on the circle and getting no preview, then "Photo
+    // Said out loud, and deliberately left on screen after a *successful*
+    // save: dropping a file on the circle and getting no preview, then "Photo
     // updated." a moment later, reads as that file having been the one saved.
-    // It wasn't, so the message names it and asks for it again.
+    // It wasn't, so the message names it and asks for it again. A save that
+    // fails overwrites this with the server's reason instead — there is one
+    // Alert, it can only hold one message, and the failure the user is
+    // looking at beats a refusal they can act on afterwards.
     if (isPending) {
       setError(
         `${picked.name} — another photo was still saving. Pick it again.`,
@@ -358,50 +361,6 @@ export function ProfileAvatar({
         {notice === 'removed' && 'Photo removed.'}
       </p>
 
-      {/*
-        One Alert for both ways an avatar fails to get stored — a file this
-        component refused to send, and a request the backend refused — because
-        the two say the same thing to the user (the picture isn't saved, here
-        is why) and only one of them has a preview to sit under: a rejected
-        file produces no selection, so a message living inside the preview
-        branch below would have nowhere to render at exactly the moment it is
-        needed. Hence here, above the branch, rather than in it.
-
-        A `danger` `Alert` rather than the small red paragraph this replaces,
-        matching the failed name save one component over: with no preview
-        around it, a line of red text is not obviously about the photo at all.
-
-        `role="alert"`, because after a failed save the button that failed
-        keeps focus and its label goes straight back from "Saving…" to "Save
-        photo" — without an announcement a screen reader user is told nothing
-        about why the picture still isn't saved. Focus is not moved to it the
-        way `ProfileName` moves focus to its own: that one sits above a field
-        the user may have scrolled past, this one is a few pixels from the
-        control that was just pressed.
-
-        `wrap-anywhere` on the description because a rejection names the file
-        it rejected, and a file name has no spaces to break at.
-
-        `max-w-56`, the same cap as everything else in this column, even
-        though the Alert spends ~60px of that on its indicator and padding
-        and a two-sentence rejection ends up several lines tall. Tried 64
-        (256px) for a more comfortable measure and reverted it: this column
-        is `shrink-0`, so its widest child sets its width, and the extra 32px
-        came straight out of the heading next to it — the `<h1>` started
-        wrapping mid-email on a 1280px viewport for as long as the error was
-        up. A slightly narrower error beats a card that reflows around it.
-      */}
-      {error && (
-        <Alert className="max-w-56" role="alert" status="danger">
-          <Alert.Indicator />
-          <Alert.Content>
-            <Alert.Description className="wrap-anywhere">
-              {error}
-            </Alert.Description>
-          </Alert.Content>
-        </Alert>
-      )}
-
       {selection ? (
         <div className="flex max-w-56 flex-col items-center gap-2">
           {/*
@@ -468,8 +427,8 @@ export function ProfileAvatar({
                 onPress={() => {
                   // `error` is cleared alongside the dialog's own, because it
                   // belongs to the upload half of this component: leaving a
-                  // rejected-file message up would put it directly above
-                  // "Photo removed." and read as the removal having failed.
+                  // rejected-file message up would put it in the same column
+                  // as "Photo removed." and read as the removal having failed.
                   setError(null);
                   setRemoveError(null);
                   setNotice(null);
@@ -499,6 +458,59 @@ export function ProfileAvatar({
             {MAX_AVATAR_SIZE_MB}MB.
           </p>
         </div>
+      )}
+
+      {/*
+        One Alert for both ways an avatar fails to get stored — a file this
+        component refused to send, and a request the backend refused — because
+        the two say the same thing to the user (the picture isn't saved, here
+        is why) and only one of them has a preview to sit under: a rejected
+        file produces no selection, so a message living inside the preview
+        branch above would have nowhere to render at exactly the moment it is
+        needed. Hence here, outside the branch, rather than in it.
+
+        Below that branch rather than above it, which is what it costs to keep
+        the controls still: this Alert is purely additive — nothing else on
+        the card changes when a picked file is refused — and above the branch
+        it pushed the button the user has to press next 136px down the page,
+        measured on a two-sentence rejection. The reason to try to put it
+        higher would be proximity to the avatar it is about, but the control
+        that produced it is nearer still, and after a failed save that control
+        also has focus.
+
+        A `danger` `Alert` rather than the small red paragraph this replaces,
+        matching the failed name save one component over: with no preview
+        around it, a line of red text is not obviously about the photo at all.
+
+        `role="alert"`, because after a failed save the button that failed
+        keeps focus and its label goes straight back from "Saving…" to "Save
+        photo" — without an announcement a screen reader user is told nothing
+        about why the picture still isn't saved. Focus is not moved to it the
+        way `ProfileName` moves focus to its own: that one sits above a field
+        the user may have scrolled past, this one is directly under the
+        control that was just pressed.
+
+        `wrap-anywhere` on the description because a rejection names the file
+        it rejected, and a file name has no spaces to break at.
+
+        `max-w-56`, the same cap as everything else in this column, even
+        though the Alert spends ~60px of that on its indicator and padding
+        and a two-sentence rejection ends up several lines tall. Tried 64
+        (256px) for a more comfortable measure and reverted it: this column
+        is `shrink-0`, so its widest child sets its width, and the extra 32px
+        came straight out of the heading next to it — the `<h1>` started
+        wrapping mid-email on a 1280px viewport for as long as the error was
+        up. A slightly narrower error beats a card that reflows around it.
+      */}
+      {error && (
+        <Alert className="max-w-56" role="alert" status="danger">
+          <Alert.Indicator />
+          <Alert.Content>
+            <Alert.Description className="wrap-anywhere">
+              {error}
+            </Alert.Description>
+          </Alert.Content>
+        </Alert>
       )}
 
       {/*
