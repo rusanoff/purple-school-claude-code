@@ -134,3 +134,149 @@ export async function updateProfile(
 
   return (await response.json()) as UserProfile;
 }
+
+/**
+ * Mirrors the backend's avatar allowlist
+ * (`ALLOWED_AVATAR_MIME_TYPES` in
+ * `apps/backend/src/users/constants/avatar-upload.constants.ts`) — a hand-kept
+ * copy for the same reason `USER_NAME_MAX_LENGTH` is one: the frontend is a
+ * separate workspace app and cannot import from the backend, so both sides
+ * must move in the same change or this will reject what the server accepts.
+ *
+ * Deliberately **not** `lib/files.ts`'s meeting-file allowlist: that one
+ * accepts audio, video and documents and no images at all, so it is both too
+ * wide and too narrow for an avatar. And deliberately a fixed set rather than
+ * an `image/` prefix check, because an avatar is the one thing this monorepo
+ * serves publicly and renders inline — `image/svg+xml` can carry script, and
+ * exotic formats aren't reliably renderable. These three are what the backend
+ * accepts and what every target browser displays.
+ */
+const ALLOWED_AVATAR_MIME_TYPES = new Set([
+  'image/jpeg',
+  'image/png',
+  'image/webp',
+]);
+
+/** `<input accept="...">` value built from the same allowlist, so the OS file
+ * picker pre-filters to the set `validateAvatar` enforces. Same role as
+ * `FILE_INPUT_ACCEPT` in `lib/files.ts` — a convenience for the picker, never
+ * a security boundary (the backend re-checks the type regardless). */
+export const AVATAR_INPUT_ACCEPT = [...ALLOWED_AVATAR_MIME_TYPES].join(',');
+
+/**
+ * Mirrors the backend's *documented default* (`AVATAR_MAX_SIZE_BYTES` in
+ * `apps/backend/.env.example`, 2MB — its own, much smaller limit than the
+ * meeting-file one, since an avatar is a single small image and a meeting file
+ * may be a multi-hour recording). The real server-side limit is configurable
+ * per deployment and not exposed over the API, so a deployment that changes it
+ * leaves this check slightly under- or over-rejecting until the backend's own
+ * check runs; the backend limit is always the one actually enforced.
+ */
+export const MAX_AVATAR_SIZE_BYTES = 2 * 1024 * 1024;
+
+/** `MAX_AVATAR_SIZE_BYTES` in whole MB — the single source for the "2MB" shown
+ * to the user, in both `validateAvatar`'s rejection message and the upload
+ * zone's hint text, so the two can't ever show different numbers. Same
+ * arrangement as `MAX_FILE_SIZE_MB` in `lib/files.ts`. */
+export const MAX_AVATAR_SIZE_MB = Math.floor(
+  MAX_AVATAR_SIZE_BYTES / (1024 * 1024),
+);
+
+/**
+ * Client-side pre-check for an avatar about to be uploaded — returns a
+ * human-readable rejection reason, or `null` if the file passes. Same role as
+ * `validateFile` in `lib/files.ts`: a faster, friendlier rejection than a
+ * round-trip, never the source of truth.
+ *
+ * The MIME type is lowercased before the lookup because the backend's own
+ * check is case-insensitive (MIME tokens are, per RFC 2045/6838) — matching it
+ * exactly is what keeps this from rejecting a file the server would accept.
+ *
+ * Worded as verdicts ("Unsupported image type: …"), like `validateFile` and
+ * unlike `validateName`'s instructions: this is rejected file feedback shown
+ * next to the upload zone, not a `FieldError` on a text input. Each verdict is
+ * then followed by the way out of it — the accepted types, a smaller file —
+ * because these render in a `danger` `Alert` that replaces the whole upload
+ * affordance's feedback, and an alert that only says what is wrong leaves the
+ * user to guess the fix. (`validateFile`'s messages are terser: they sit in an
+ * upload queue row beside a dropzone that states its own limits, so the next
+ * step is already on screen next to them.) Naming the accepted types is
+ * affordable here only because, unlike the meeting-file allowlist, this one is
+ * three entries long.
+ */
+export function validateAvatar(file: File): string | null {
+  // Checked before the type, because a 0-byte file's reported type is guessed
+  // from its name and says nothing about its contents. Nothing on the server
+  // catches this — an empty upload is under every limit, so it is stored and
+  // answered with a perfectly good `avatarUrl` — and the result is an avatar
+  // that can never decode, which `components/avatar.tsx` renders as the
+  // initial placeholder forever while the page reports the save succeeded.
+  if (file.size === 0) {
+    return 'That image file is empty.';
+  }
+
+  if (!ALLOWED_AVATAR_MIME_TYPES.has(file.type.toLowerCase())) {
+    return file.type
+      ? `Unsupported image type: ${file.type}. Use a JPEG, PNG or WebP image.`
+      : 'Unsupported or unrecognized image type. Use a JPEG, PNG or WebP image.';
+  }
+
+  if (file.size > MAX_AVATAR_SIZE_BYTES) {
+    return `Image is too large (max ${MAX_AVATAR_SIZE_MB}MB). Choose a smaller image.`;
+  }
+
+  return null;
+}
+
+/**
+ * `POST /users/me/avatar` — sets or replaces the signed-in user's avatar from
+ * a `multipart/form-data` body. Self-scoped like the rest of this module: the
+ * request carries an image and no id, so the bearer token alone decides whose
+ * avatar is written.
+ *
+ * The `FormData` body is passed to `apiFetch` unstringified on purpose — the
+ * browser has to set `Content-Type` itself with the multipart boundary, which
+ * is why `apiFetch` only defaults that header for a string body.
+ *
+ * Returns the full updated profile (the backend answers 200 with the same
+ * shape as `GET /users/me`, not 201 — the avatar is a singleton sub-resource,
+ * so a second upload creates nothing), so the caller refreshes the UI from it
+ * rather than refetching. A 400 means the backend rejected the type or the
+ * size; `validateAvatar` catches both first, so that is the server's own
+ * enforcement rather than the expected path. 401/404 mean what they do on
+ * `getUserProfile` and are handled the same way.
+ */
+export async function uploadAvatar(
+  token: string,
+  file: File,
+): Promise<UserProfile> {
+  const body = new FormData();
+  body.append('file', file);
+
+  const response = await apiFetch('/users/me/avatar', {
+    method: 'POST',
+    token,
+    body,
+  });
+
+  return (await response.json()) as UserProfile;
+}
+
+/**
+ * `DELETE /users/me/avatar` — clears the signed-in user's avatar, file
+ * included. Returns the updated profile (with `avatarUrl` back to `null`)
+ * rather than 204, so the caller can drop back to the initial placeholder
+ * from the same source of truth the rest of the page reads.
+ *
+ * Deleting an avatar that isn't there is not an error — the backend clears an
+ * already-null column and answers with the profile — so a caller doesn't have
+ * to guard the call on `avatarUrl` being set.
+ */
+export async function deleteAvatar(token: string): Promise<UserProfile> {
+  const response = await apiFetch('/users/me/avatar', {
+    method: 'DELETE',
+    token,
+  });
+
+  return (await response.json()) as UserProfile;
+}

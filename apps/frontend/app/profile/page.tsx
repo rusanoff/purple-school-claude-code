@@ -16,13 +16,14 @@ import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { useCallback, useEffect, useRef, useState } from 'react';
 
-import { getDisplayName, UserAvatar } from '@/components/avatar';
+import { getDisplayName } from '@/components/avatar';
 import {
   ArrowLeftIcon,
   CalendarIcon,
   EnvelopeIcon,
   PencilIcon,
 } from '@/components/icons';
+import { ProfileAvatar } from '@/components/profile-avatar';
 import { ApiError, clearAccessToken, getAccessToken } from '@/lib/auth';
 import { formatDay } from '@/lib/format';
 import {
@@ -153,13 +154,10 @@ export default function ProfilePage() {
 
       {result.kind === 'success' && (
         <Card className="min-w-0 gap-6 p-6 sm:p-8">
-          <div className="flex min-w-0 flex-col items-center gap-4 sm:flex-row sm:gap-6">
-            <UserAvatar
-              avatarUrl={result.profile.avatarUrl}
-              className="shrink-0"
-              email={result.profile.email}
-              name={result.profile.name}
-              size="xl"
+          <div className="flex min-w-0 flex-col items-center gap-4 sm:flex-row sm:items-start sm:gap-6">
+            <ProfileAvatar
+              profile={result.profile}
+              onSaved={(profile) => setResult({ kind: 'success', profile })}
             />
             <ProfileName
               profile={result.profile}
