@@ -1,6 +1,13 @@
-/** Client for the backend users API (`apps/backend/src/users`). */
+/**
+ * Client for the backend users API (`apps/backend/src/users`), plus the one
+ * call that edits the signed-in user's account rather than their profile —
+ * `changePassword`, which is served by `apps/backend/src/auth` because it
+ * answers with credentials. It is grouped here, with the other profile-page
+ * actions, rather than in `lib/auth.ts` with the sign-in calls.
+ */
 
 import { apiFetch } from './api';
+import type { AuthResponse } from './auth';
 
 /**
  * Mirrors the backend's `UserProfileResponse` interface
@@ -279,4 +286,67 @@ export async function deleteAvatar(token: string): Promise<UserProfile> {
   });
 
   return (await response.json()) as UserProfile;
+}
+
+/** Body of `POST /auth/change-password` — mirrors the backend's
+ * `ChangePasswordDto`. Neither password is trimmed anywhere on the way to the
+ * server (unlike `UpdateProfileInput.name`): a password is an opaque secret
+ * whose leading and trailing whitespace is part of it, so trimming would send
+ * — and have the backend store — something other than what the user typed. */
+export interface ChangePasswordInput {
+  currentPassword: string;
+  newPassword: string;
+}
+
+/**
+ * `POST /auth/change-password` — replaces the signed-in user's password.
+ * Self-scoped like the rest of this module: the body carries no email or id,
+ * so the account written is the one the bearer token identifies, and knowing
+ * `currentPassword` is what keeps a stolen token from being enough to lock the
+ * real owner out.
+ *
+ * Lives here with the other profile-editing calls because that is where it is
+ * used from, but it is the one function in this module that does **not** hit
+ * `/users` and does not answer with a `UserProfile`: it returns credentials.
+ * The backend's JWTs are stateless and never revoked, so rather than signing
+ * the user out it hands back a freshly signed token — **the caller must store
+ * it** (`saveAccessToken` from `lib/auth.ts`), or the app keeps using the old
+ * one until it expires and the user appears to have been logged out by
+ * changing their password.
+ *
+ * A wrong `currentPassword` is a **400**, not the 401 a wrong password gets at
+ * login, and that is a deliberate backend choice rather than an accident: every
+ * page in this app treats a 401 as "the session is over" and redirects to
+ * `/login`, so answering 401 would log a user out for a typo. Callers must
+ * therefore not fold this call's 400s into that path — its message ("Current
+ * password is incorrect") is written for a person and renders as-is.
+ *
+ * A `newPassword` under the backend's minimum length is also a 400, but that
+ * one comes from the global `ValidationPipe` and reads like a schema error
+ * ("newPassword must be longer than or equal to 6 characters") rather than
+ * like something written for the user. Callers should keep it off the screen
+ * by pre-checking the length client-side, the way `validateName` and
+ * `validateAvatar` guard the other writable inputs here — this module has no
+ * such mirror of the backend's `PASSWORD_MIN_LENGTH` yet, so until it does,
+ * that check lives with the form (as `MIN_PASSWORD_LENGTH` already does in
+ * `app/register/page.tsx`).
+ *
+ * 401 and 404 keep the meanings they have on every other function in this
+ * module — the token is missing or expired, or it verified but the user row is
+ * gone — and are handled the same way (clear the token, redirect to `/login`).
+ * The warning above is about 400s specifically and does not exempt this call
+ * from that. A 409 means a concurrent change won the race and the password the
+ * user typed is no longer the current one.
+ */
+export async function changePassword(
+  token: string,
+  { currentPassword, newPassword }: ChangePasswordInput,
+): Promise<AuthResponse> {
+  const response = await apiFetch('/auth/change-password', {
+    method: 'POST',
+    token,
+    body: JSON.stringify({ currentPassword, newPassword }),
+  });
+
+  return (await response.json()) as AuthResponse;
 }
