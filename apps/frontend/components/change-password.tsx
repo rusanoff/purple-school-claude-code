@@ -1,6 +1,7 @@
 'use client';
 
 import {
+  Alert,
   Button,
   Card,
   Description,
@@ -20,6 +21,7 @@ import {
   clearAccessToken,
   getAccessToken,
   PASSWORD_MIN_LENGTH,
+  saveAccessToken,
   validatePassword,
 } from '@/lib/auth';
 import { changePassword } from '@/lib/users';
@@ -51,19 +53,28 @@ import { changePassword } from '@/lib/users';
  * regardless, and the confirmation is purely a typo guard for a value the user
  * cannot see while typing it.
  *
- * Storing the freshly signed `accessToken` the call returns, and the
- * success/`danger`-`Alert` treatment of its outcome, is the next issue. Until
- * then a failure surfaces the server's own message inline, announced via
- * `role="alert"`, and a success just closes the form. Not storing the new
- * token is survivable in the meantime and not a silent logout: the backend's
- * JWTs are stateless, so the one in `localStorage` stays valid until it
- * expires (see `changePassword` in `lib/users.ts`).
+ * A success **stores the freshly signed `accessToken`** the call hands back
+ * (`saveAccessToken`) before anything else. That store is the whole reason the
+ * user stays signed in: the backend's JWTs are stateless and it re-signs one on
+ * every password change, so keeping the old token would leave the app holding
+ * credentials for a password that no longer exists — fine until it expires,
+ * then a logout the user would blame on having changed their password.
+ *
+ * The three outcomes are reported the way the name editor reports its own:
+ * saving is the submit button's `isPending` spinner, a success closes the form
+ * and leaves a `success` `Alert` behind it, and a failure keeps the form open
+ * under a `danger` `Alert` carrying the server's own message. A wrong current
+ * password is that last case and nothing more — the backend deliberately makes
+ * it a 400 rather than a 401 so it cannot be mistaken for an expired session
+ * (see `changePassword` in `lib/users.ts`), which is what keeps a typo from
+ * logging the user out.
  */
 export function ChangePassword() {
   const router = useRouter();
 
   const [isEditing, setIsEditing] = useState(false);
   const [isPending, setIsPending] = useState(false);
+  const [isSaved, setIsSaved] = useState(false);
   const [error, setError] = useState<string | null>(null);
   /**
    * The new password, mirrored into state purely so the confirmation field can
@@ -78,7 +89,7 @@ export function ChangePassword() {
    */
   const [newPassword, setNewPassword] = useState('');
 
-  const errorRef = useRef<HTMLParagraphElement>(null);
+  const errorRef = useRef<HTMLDivElement>(null);
   const openButtonRef = useRef<HTMLButtonElement>(null);
   const wasEditingRef = useRef(false);
 
@@ -140,9 +151,19 @@ export function ChangePassword() {
     setIsPending(true);
     setError(null);
 
+    let accessToken: string;
+
+    // Only the request is guarded. Everything after the `catch` runs on a
+    // password the server has **already** changed, and must not be able to
+    // report a failure: a `localStorage` write that threw (Safari private
+    // browsing, a full quota) would otherwise surface as "Couldn't change your
+    // password" for a change that did happen, and the retry it invites can only
+    // come back "Current password is incorrect".
     try {
-      await changePassword(token, { currentPassword, newPassword });
-      closeForm();
+      ({ accessToken } = await changePassword(token, {
+        currentPassword,
+        newPassword,
+      }));
     } catch (cause) {
       // 401/404 mean the session is over, exactly as on the page's own fetch.
       // A wrong current password is deliberately **not** one of them — the
@@ -161,9 +182,20 @@ export function ChangePassword() {
       setError(
         cause instanceof ApiError ? cause.message : 'Something went wrong.',
       );
+      return;
     } finally {
       setIsPending(false);
     }
+
+    // Before the form closes: the token in `localStorage` was signed against
+    // the password that no longer exists. Nothing invalidates it server-side —
+    // the backend's JWTs are stateless — so the app would keep working on it
+    // until it expired and then log the user out for a reason they'd pin on
+    // this form. Storing the new one is what makes "changed my password and
+    // stayed signed in" true.
+    saveAccessToken(accessToken);
+    closeForm();
+    setIsSaved(true);
   };
 
   // Any edit makes a previous failure stale, exactly as on the register form
@@ -172,6 +204,52 @@ export function ChangePassword() {
   const handleChange = () => {
     setError((previous) => (previous ? null : previous));
   };
+
+  /*
+    Rendered in both modes and at the same position in what this component
+    returns, so React keeps the node mounted across the switch between them —
+    `ProfileName`'s `savedNotice` for the same reason: a live region has to
+    already be in the DOM when its content appears for the announcement to be
+    reliable, and a successful save is exactly the moment it would otherwise
+    mount. It stays empty in edit mode, since `isSaved` is cleared when the
+    form reopens and there is nothing to re-assert.
+
+    This one carries a `Description` where the name editor's carries only a
+    title: unlike a renamed heading, a changed password leaves nothing on
+    screen to look at, so "you are still signed in" is the only confirmation
+    the user gets that the thing they'd worry about didn't happen.
+
+    `polite` rather than `assertive` — the outcome is visible, and focus is
+    landing on the "Change password" button at the same moment; interrupting
+    that announcement would be worse than following it.
+
+    `sr-only` while empty rather than a bare empty node, for the reason
+    `components/profile-avatar.tsx`'s status region carries the same class:
+    this sits in a gapped flex column (`Card.Content` is `gap-1`), where a
+    zero-height item is still an item and would push 4px of dead space under
+    the button on every visit that saved nothing. `sr-only` is absolutely
+    positioned, so it leaves the flow without leaving the DOM.
+  */
+  const savedNotice = (
+    <div
+      aria-live="polite"
+      className={isSaved ? undefined : 'sr-only'}
+      role="status"
+    >
+      {isSaved && (
+        <Alert className="mt-4" status="success">
+          <Alert.Indicator />
+          <Alert.Content>
+            <Alert.Title>Password updated</Alert.Title>
+            <Alert.Description>
+              Use your new password next time you sign in. You&apos;re still
+              signed in here.
+            </Alert.Description>
+          </Alert.Content>
+        </Alert>
+      )}
+    </div>
+  );
 
   return (
     <Card className="min-w-0 gap-6 p-6 sm:p-8">
@@ -184,14 +262,19 @@ export function ChangePassword() {
         </Card.Description>
       </Card.Header>
 
-      <Card.Content>
+      <Card.Content className="flex min-w-0 flex-col">
         {!isEditing ? (
+          // `self-start` because this column stretches its children, and a
+          // full-width "Change password" button would read as the primary
+          // action of the whole page rather than the way into a form.
           <Button
+            className="self-start"
             ref={openButtonRef}
             size="sm"
             variant="ghost"
             onPress={() => {
               setError(null);
+              setIsSaved(false);
               setIsEditing(true);
             }}
           >
@@ -200,15 +283,28 @@ export function ChangePassword() {
           </Button>
         ) : (
           <Form className="flex min-w-0 flex-col gap-5" onSubmit={handleSubmit}>
+            {/*
+              The one place a wrong current password surfaces: the backend
+              answers it with a 400 carrying its own message, which falls
+              through `handleSubmit`'s 401/404 branch to here. Same `danger`
+              `Alert` the register page and the name editor use for a rejected
+              submit — the message is the server's, the title says which
+              action failed, since this card holds only one.
+            */}
             {error && (
-              <p
-                className="text-danger text-sm outline-none"
+              <Alert
+                className="outline-none"
                 ref={errorRef}
                 role="alert"
+                status="danger"
                 tabIndex={-1}
               >
-                {error}
-              </p>
+                <Alert.Indicator />
+                <Alert.Content>
+                  <Alert.Title>Couldn&apos;t change your password</Alert.Title>
+                  <Alert.Description>{error}</Alert.Description>
+                </Alert.Content>
+              </Alert>
             )}
 
             <PasswordField
@@ -276,6 +372,7 @@ export function ChangePassword() {
             </div>
           </Form>
         )}
+        {savedNotice}
       </Card.Content>
     </Card>
   );
