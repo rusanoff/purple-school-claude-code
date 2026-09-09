@@ -4,11 +4,18 @@ import { JwtService } from '@nestjs/jwt';
 import { FastifyAdapter } from '@nestjs/platform-fastify';
 import request from 'supertest';
 import { App } from 'supertest/types';
-import { randomUUID } from 'crypto';
+import { randomBytes, randomUUID } from 'crypto';
 import { AppModule } from '../src/app.module';
+import { PrismaService } from '../src/prisma/prisma.service';
 
 const PASSWORD = 'Sup3rSecret!';
 
+/**
+ * The "who is this person" shape the API embeds in other resources. A
+ * meeting's `participants` are sent as plain emails and answered as these —
+ * the asymmetry is the point: the request carries what the organizer typed,
+ * the response says who that turned out to be.
+ */
 interface ParticipantBody {
   email: string;
   name: string | null;
@@ -35,8 +42,15 @@ function sampleMeeting() {
   };
 }
 
+/** A stored `avatarPath` in the shape `AvatarStorageService` generates them:
+ * 16 random bytes as hex plus the extension of the validated MIME type. */
+function generatedAvatarPath(): string {
+  return `${randomBytes(16).toString('hex')}.png`;
+}
+
 describe('Meeting (e2e)', () => {
   let app: INestApplication<App>;
+  let prisma: PrismaService;
 
   /** Registers a fresh user and returns their bearer access token. */
   async function registerUser(): Promise<string> {
@@ -66,6 +80,61 @@ describe('Meeting (e2e)', () => {
     };
   }
 
+  /** Fills in a user's display name, so their participant summary has
+   * something to answer with other than the email. */
+  async function setName(token: string, name: string): Promise<void> {
+    await request(app.getHttpServer())
+      .patch('/users/me')
+      .set('Authorization', `Bearer ${token}`)
+      .send({ name })
+      .expect(200);
+  }
+
+  /**
+   * Points a user's row at a stored avatar and returns the `avatarUrl` their
+   * participant summary must therefore carry.
+   *
+   * Written straight to the row rather than through `POST /users/me/avatar`,
+   * the same stand-in `avatar-static.e2e-spec.ts` makes: what is under test
+   * here is a meeting answering with an avatar, not the route that stores one
+   * — that route is `avatar-upload.e2e-spec.ts`'s subject. No file is put on
+   * disk either, since nothing on this path reads one: the summary maps the
+   * stored filename to a URL and never opens it.
+   */
+  async function setAvatar(email: string): Promise<string> {
+    const avatarPath = generatedAvatarPath();
+    await prisma.user.update({ where: { email }, data: { avatarPath } });
+
+    return `/api/avatars/${avatarPath}`;
+  }
+
+  /** Creates a meeting with the given participant emails and returns its id. */
+  async function createMeeting(
+    token: string,
+    participants: string[],
+  ): Promise<string> {
+    const response = await request(app.getHttpServer())
+      .post('/meetings')
+      .set('Authorization', `Bearer ${token}`)
+      .send({ ...sampleMeeting(), participants })
+      .expect(201);
+
+    return (response.body as MeetingBody).id;
+  }
+
+  /** The meeting as its owner reads it back. */
+  async function getMeeting(
+    token: string,
+    meetingId: string,
+  ): Promise<MeetingBody> {
+    const response = await request(app.getHttpServer())
+      .get(`/meetings/${meetingId}`)
+      .set('Authorization', `Bearer ${token}`)
+      .expect(200);
+
+    return response.body as MeetingBody;
+  }
+
   beforeAll(async () => {
     const moduleFixture: TestingModule = await Test.createTestingModule({
       imports: [AppModule],
@@ -78,6 +147,8 @@ describe('Meeting (e2e)', () => {
     // needs the adapter's underlying instance to be ready before requests
     // against app.getHttpServer() are guaranteed to hit registered routes.
     await adapter.getInstance().ready();
+
+    prisma = app.get(PrismaService);
   });
 
   afterAll(async () => {
@@ -515,6 +586,136 @@ describe('Meeting (e2e)', () => {
   });
 
   // тест #4
+  describe('participant profiles', () => {
+    it('answers with a registered participant’s name and avatar', async () => {
+      const ownerToken = await registerUser();
+      const { email, token } = await registerUserWithEmail();
+      await setName(token, 'Ada Lovelace');
+      const avatarUrl = await setAvatar(email);
+
+      const meetingId = await createMeeting(ownerToken, [email]);
+      const meeting = await getMeeting(ownerToken, meetingId);
+
+      // The point of the phase: enough to render a person, so the meeting
+      // page never has to show a bare address. `avatarUrl` arrives with the
+      // frontend rewrite's `/api` already on it, ready for an `<img src>` —
+      // it is `user-profile.interface.ts` that puts it there, and nothing
+      // downstream may add it a second time.
+      expect(meeting.participants).toEqual([
+        { email, name: 'Ada Lovelace', avatarUrl },
+      ]);
+      expect(avatarUrl).toMatch(/^\/api\/avatars\/[0-9a-f]{32}\.png$/);
+    });
+
+    it('falls back to the bare email for a registered participant who filled in no profile, and for one with no account at all', async () => {
+      const ownerToken = await registerUser();
+      const { email: registeredEmail } = await registerUserWithEmail();
+      const strangerEmail = uniqueEmail();
+
+      const meetingId = await createMeeting(ownerToken, [
+        registeredEmail,
+        strangerEmail,
+      ]);
+      const meeting = await getMeeting(ownerToken, meetingId);
+
+      // The two are deliberately indistinguishable: an email nobody
+      // registered isn't an error, it's a participant whose profile is as
+      // empty as it can get, and answering with the same shape means a client
+      // renders one kind of thing for every participant.
+      expect(meeting.participants).toEqual([
+        { email: registeredEmail, name: null, avatarUrl: null },
+        { email: strangerEmail, name: null, avatarUrl: null },
+      ]);
+    });
+
+    it('keeps the participants in the order they were sent', async () => {
+      const ownerToken = await registerUser();
+      const { email: firstEmail, token: firstToken } =
+        await registerUserWithEmail();
+      const { email: secondEmail, token: secondToken } =
+        await registerUserWithEmail();
+      await setName(firstToken, 'First Participant');
+      await setName(secondToken, 'Second Participant');
+
+      // Sent second-then-first on purpose: the summaries are looked up in one
+      // batched query, so the response must follow the meeting's own list
+      // rather than whatever order the database answered that query in.
+      const meetingId = await createMeeting(ownerToken, [
+        secondEmail,
+        firstEmail,
+      ]);
+      const meeting = await getMeeting(ownerToken, meetingId);
+
+      expect(meeting.participants.map((p) => p.name)).toEqual([
+        'Second Participant',
+        'First Participant',
+      ]);
+      expect(meeting.participants.map((p) => p.email)).toEqual([
+        secondEmail,
+        firstEmail,
+      ]);
+    });
+
+    it('recognizes a participant whose email the organizer typed in another case', async () => {
+      const ownerToken = await registerUser();
+      const { email, token } = await registerUserWithEmail();
+      await setName(token, 'Ada Lovelace');
+
+      const meetingId = await createMeeting(ownerToken, [email.toUpperCase()]);
+      const meeting = await getMeeting(ownerToken, meetingId);
+
+      // `assertMeetingAccess` already lets this person into the meeting
+      // whatever case their email is spelled in — showing them as a stranger
+      // here would contradict that. A match answers with the address as their
+      // *account* spells it, not as the organizer typed it.
+      expect(meeting.participants).toEqual([
+        { email, name: 'Ada Lovelace', avatarUrl: null },
+      ]);
+    });
+
+    it('echoes an unregistered participant’s email exactly as it was typed', async () => {
+      const ownerToken = await registerUser();
+      const mixedCaseEmail = `Test-${randomUUID()}@Example.com`;
+
+      const meetingId = await createMeeting(ownerToken, [mixedCaseEmail]);
+      const meeting = await getMeeting(ownerToken, meetingId);
+
+      // Lowercasing is a matching detail. With no account to answer with,
+      // normalizing the fallback would show an address nobody entered.
+      expect(meeting.participants).toEqual([
+        { email: mixedCaseEmail, name: null, avatarUrl: null },
+      ]);
+    });
+
+    it('expands the participants of every meeting in the list, not just the first', async () => {
+      const ownerToken = await registerUser();
+      const { email: firstEmail, token: firstToken } =
+        await registerUserWithEmail();
+      const { email: secondEmail, token: secondToken } =
+        await registerUserWithEmail();
+      await setName(firstToken, 'First Participant');
+      await setName(secondToken, 'Second Participant');
+
+      await createMeeting(ownerToken, [firstEmail]);
+      await createMeeting(ownerToken, [secondEmail]);
+
+      const response = await request(app.getHttpServer())
+        .get('/meetings')
+        .set('Authorization', `Bearer ${ownerToken}`)
+        .expect(200);
+
+      // `GET /meetings` resolves every meeting's participants in one shared
+      // lookup, so a list is where "each meeting gets its own people" can
+      // actually go wrong — newest first, hence the second meeting leading.
+      expect(
+        (response.body as MeetingBody[]).map((meeting) =>
+          meeting.participants.map((p) => p.name),
+        ),
+      ).toEqual([['Second Participant'], ['First Participant']]);
+    });
+  });
+
+  // тест #5
   describe('DELETE /meetings/:id', () => {
     it('lets the owner delete their meeting', async () => {
       const token = await registerUser();

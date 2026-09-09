@@ -1,4 +1,4 @@
-import { randomUUID } from 'crypto';
+import { randomBytes, randomUUID } from 'crypto';
 import { existsSync, readdirSync } from 'fs';
 import { mkdtemp, rm } from 'fs/promises';
 import { tmpdir } from 'os';
@@ -18,7 +18,17 @@ const PASSWORD = 'Sup3rSecret!';
 // on isolating e2e file storage from dev data.
 const MAX_FILE_SIZE_BYTES = 5 * 1024; // 5KB
 
-interface ParticipantBody {
+/** A stored `avatarPath` in the shape `AvatarStorageService` generates them:
+ * 16 random bytes as hex plus the extension of the validated MIME type. */
+function generatedAvatarPath(): string {
+  return `${randomBytes(16).toString('hex')}.png`;
+}
+
+/**
+ * The "who is this person" shape the API embeds in other resources — a
+ * meeting's participants, and a file's uploader below.
+ */
+interface UserSummaryBody {
   email: string;
   name: string | null;
   avatarUrl: string | null;
@@ -28,14 +38,17 @@ interface MeetingBody {
   id: string;
   title: string;
   date: string;
-  participants: ParticipantBody[];
+  participants: UserSummaryBody[];
   isOwner: boolean;
 }
 
 interface MeetingFileBody {
   id: string;
   meetingId: string;
+  // Identity (who may delete this file) and display (who to render) are
+  // separate fields on purpose — see `MeetingFileResponse`.
   uploadedById: string;
+  uploadedBy: UserSummaryBody;
   filename: string;
   mimeType: string;
   size: number;
@@ -111,6 +124,45 @@ describe('Meeting files (e2e)', () => {
       .expect(201);
 
     return response.body as MeetingFileBody;
+  }
+
+  /** Fills in the caller's display name, so the uploader summary has
+   * something to answer with other than the email. */
+  async function setName(token: string, name: string): Promise<void> {
+    await request(app.getHttpServer())
+      .patch('/users/me')
+      .set('Authorization', `Bearer ${token}`)
+      .send({ name })
+      .expect(200);
+  }
+
+  /**
+   * Points a user's row at a stored avatar and returns the `avatarUrl` the
+   * uploader summary must therefore carry.
+   *
+   * Written straight to the row rather than through `POST /users/me/avatar`,
+   * the same stand-in `avatar-static.e2e-spec.ts` makes: what is under test
+   * here is a file naming its uploader, not the route that stores an avatar —
+   * that route is `avatar-upload.e2e-spec.ts`'s subject. No file is put on
+   * disk either, since nothing on this path reads one: the summary maps the
+   * stored filename to a URL and never opens it.
+   */
+  async function setAvatar(email: string): Promise<string> {
+    const avatarPath = generatedAvatarPath();
+    await prisma.user.update({ where: { email }, data: { avatarPath } });
+
+    return `/api/avatars/${avatarPath}`;
+  }
+
+  /** The caller's own id, as `GET /users/me` reports it — what
+   * `uploadedById` has to match. */
+  async function currentUserId(token: string): Promise<string> {
+    const response = await request(app.getHttpServer())
+      .get('/users/me')
+      .set('Authorization', `Bearer ${token}`)
+      .expect(200);
+
+    return (response.body as { id: string }).id;
   }
 
   beforeAll(async () => {
@@ -200,6 +252,24 @@ describe('Meeting files (e2e)', () => {
       expect((response.body as MeetingFileBody).mimeType).toBe(
         'application/pdf',
       );
+    });
+
+    it('describes the uploader in the upload response too, not only in the list', async () => {
+      const { email, token } = await registerUserWithEmail();
+      await setName(token, 'Ada Lovelace');
+      const avatarUrl = await setAvatar(email);
+      const meetingId = await createMeeting(token);
+
+      const file = await uploadFile(token, meetingId);
+
+      // The frontend appends this response to the list it already holds
+      // instead of re-fetching, so an upload that answered without the
+      // uploader would render as a nameless row until the page reloaded.
+      expect(file.uploadedBy).toEqual({
+        email,
+        name: 'Ada Lovelace',
+        avatarUrl,
+      });
     });
 
     it('lets a participant upload a valid file', async () => {
@@ -423,6 +493,91 @@ describe('Meeting files (e2e)', () => {
         .expect(200);
 
       expect(response.body).toEqual([]);
+    });
+
+    it('names the uploader — their profile, not just their id', async () => {
+      const { email, token } = await registerUserWithEmail();
+      await setName(token, 'Ada Lovelace');
+      const avatarUrl = await setAvatar(email);
+      const meetingId = await createMeeting(token);
+      await uploadFile(token, meetingId);
+
+      const response = await request(app.getHttpServer())
+        .get(`/meetings/${meetingId}/files`)
+        .set('Authorization', `Bearer ${token}`)
+        .expect(200);
+
+      const [file] = response.body as MeetingFileBody[];
+      // The whole point of the phase: enough to render a person, so the
+      // meeting page never has to fall back to "Meeting participant".
+      expect(file.uploadedBy).toEqual({
+        email,
+        name: 'Ada Lovelace',
+        avatarUrl,
+      });
+      // `avatarUrl` arrives with the frontend rewrite's `/api` already on it,
+      // ready for an `<img src>` — `user-profile.interface.ts` is what puts it
+      // there, and nothing downstream may add it a second time.
+      expect(avatarUrl).toMatch(/^\/api\/avatars\/[0-9a-f]{32}\.png$/);
+      // The id is still there next to the summary — it is what the frontend
+      // compares against the signed-in user to decide who may delete this
+      // file, and the summary carries no id of its own.
+      expect(file.uploadedById).toBe(await currentUserId(token));
+    });
+
+    it('falls back to the email for an uploader who filled in no profile', async () => {
+      const { email, token } = await registerUserWithEmail();
+      const meetingId = await createMeeting(token);
+      await uploadFile(token, meetingId);
+
+      const response = await request(app.getHttpServer())
+        .get(`/meetings/${meetingId}/files`)
+        .set('Authorization', `Bearer ${token}`)
+        .expect(200);
+
+      const [file] = response.body as MeetingFileBody[];
+      // Both profile columns are optional, so the email has to stay the one
+      // field a client can always render.
+      expect(file.uploadedBy).toEqual({ email, name: null, avatarUrl: null });
+    });
+
+    it('gives every file its own uploader, not the caller’s', async () => {
+      const { email: ownerEmail, token: ownerToken } =
+        await registerUserWithEmail();
+      const { email: participantEmail, token: participantToken } =
+        await registerUserWithEmail();
+      await setName(ownerToken, 'Olga Owner');
+      await setName(participantToken, 'Pat Participant');
+      const meetingId = await createMeeting(ownerToken, [participantEmail]);
+
+      await uploadFile(ownerToken, meetingId, { filename: 'owners.mp4' });
+      await uploadFile(participantToken, meetingId, {
+        filename: 'participants.mp4',
+      });
+
+      const response = await request(app.getHttpServer())
+        .get(`/meetings/${meetingId}/files`)
+        .set('Authorization', `Bearer ${ownerToken}`)
+        .expect(200);
+
+      // The uploader is joined per row, so a list mixing two people must
+      // describe each of them — reading the caller's own profile onto every
+      // file, or the first row's onto the rest, would both pass a
+      // single-uploader test.
+      const summaries = new Map(
+        (response.body as MeetingFileBody[]).map((file) => [
+          file.filename,
+          file.uploadedBy,
+        ]),
+      );
+      expect(summaries.get('owners.mp4')).toMatchObject({
+        email: ownerEmail,
+        name: 'Olga Owner',
+      });
+      expect(summaries.get('participants.mp4')).toMatchObject({
+        email: participantEmail,
+        name: 'Pat Participant',
+      });
     });
   });
 
