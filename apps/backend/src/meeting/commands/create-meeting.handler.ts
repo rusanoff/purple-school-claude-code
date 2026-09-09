@@ -4,6 +4,7 @@ import {
   MeetingResponse,
   toMeetingResponse,
 } from '../interfaces/meeting.interface';
+import { loadParticipantDirectory } from '../participants/participant-directory';
 import { CreateMeetingCommand } from './create-meeting.command';
 
 @CommandHandler(CreateMeetingCommand)
@@ -20,6 +21,13 @@ export class CreateMeetingHandler implements ICommandHandler<CreateMeetingComman
       data: { ownerId, title, date: new Date(date), participants },
     });
 
-    return toMeetingResponse(meeting, ownerId);
+    // Stored as the plain emails they arrived as; expanded only on the way
+    // out, so the create response is the same shape a later read returns.
+    const directory = await loadParticipantDirectory(
+      this.prisma,
+      meeting.participants,
+    );
+
+    return toMeetingResponse(meeting, ownerId, directory);
   }
 }

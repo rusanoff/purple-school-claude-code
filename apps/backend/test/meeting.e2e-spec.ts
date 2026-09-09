@@ -9,11 +9,17 @@ import { AppModule } from '../src/app.module';
 
 const PASSWORD = 'Sup3rSecret!';
 
+interface ParticipantBody {
+  email: string;
+  name: string | null;
+  avatarUrl: string | null;
+}
+
 interface MeetingBody {
   id: string;
   title: string;
   date: string;
-  participants: string[];
+  participants: ParticipantBody[];
   isOwner: boolean;
 }
 
@@ -149,7 +155,16 @@ describe('Meeting (e2e)', () => {
       expect(body.id.length).toBeGreaterThan(0);
       expect(body.title).toBe(payload.title);
       expect(new Date(body.date).toISOString()).toBe(payload.date);
-      expect(body.participants).toEqual(payload.participants);
+      // Sent as plain emails, answered as summaries — `sampleMeeting`'s
+      // participants are made-up addresses with no account behind them, so
+      // every one of them comes back with nothing filled in but the email.
+      expect(body.participants).toEqual(
+        payload.participants.map((email) => ({
+          email,
+          name: null,
+          avatarUrl: null,
+        })),
+      );
     });
 
     it('rejects a meeting without a title', async () => {
@@ -485,7 +500,15 @@ describe('Meeting (e2e)', () => {
       expect(fetched.body).toEqual(created.body);
       expect(fetched.body).toEqual({
         id: (created.body as MeetingBody).id,
-        ...payload,
+        title: payload.title,
+        date: payload.date,
+        // Same expansion the create response does — that the two agree is
+        // half of what "round-trips unchanged" means here.
+        participants: payload.participants.map((email) => ({
+          email,
+          name: null,
+          avatarUrl: null,
+        })),
         isOwner: true,
       });
     });

@@ -18,11 +18,17 @@ const PASSWORD = 'Sup3rSecret!';
 // on isolating e2e file storage from dev data.
 const MAX_FILE_SIZE_BYTES = 5 * 1024; // 5KB
 
+interface ParticipantBody {
+  email: string;
+  name: string | null;
+  avatarUrl: string | null;
+}
+
 interface MeetingBody {
   id: string;
   title: string;
   date: string;
-  participants: string[];
+  participants: ParticipantBody[];
   isOwner: boolean;
 }
 
