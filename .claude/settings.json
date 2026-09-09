@@ -17,7 +17,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node .claude/hooks/stop.js",
+            "command": "node \"$CLAUDE_PROJECT_DIR/.claude/hooks/stop.js\"",
             "timeout": 86400
           }
         ]
@@ -29,7 +29,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "jq -r '.tool_input.file_path // empty' | { read -r f; [ -n \"$f\" ] && [ -f \"$f\" ] && npx --no-install prettier --ignore-unknown --write \"$f\"; } >/dev/null 2>&1 || true",
+            "command": "jq -r '.tool_input.file_path // empty' | { read -r f; [ -n \"$f\" ] && [ -f \"$f\" ] && cd \"$CLAUDE_PROJECT_DIR\" && npx --no-install prettier --ignore-unknown --write \"$f\"; } >/dev/null 2>&1 || true",
             "statusMessage": "Formatting with Prettier..."
           }
         ]

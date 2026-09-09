@@ -12,6 +12,53 @@ export interface AuthResponse {
   accessToken: string;
 }
 
+/**
+ * Mirrors the backend's `PASSWORD_MIN_LENGTH`
+ * (`apps/backend/src/auth/dto/auth-credentials.dto.ts`), which registration
+ * and the change-password route both enforce, so every form that sets a
+ * password can reject a too-short one before it reaches the network. The
+ * frontend is a separate workspace app and cannot import from the backend
+ * one, so this is a hand-kept copy, not a derivation — same rule as
+ * `USER_NAME_MIN_LENGTH` in `lib/users.ts`: if the number moves there, move
+ * it here in the same change, or the client will validate against a stale
+ * limit and surface unexplained 400s.
+ *
+ * It lives here, next to the calls that send passwords, rather than in either
+ * form, because both the register page and the profile page's change-password
+ * form check against it and two copies of `6` in the app would be a second
+ * chance to drift.
+ */
+export const PASSWORD_MIN_LENGTH = 6;
+
+/**
+ * Client-side pre-check for a password about to be set — returns a
+ * human-readable rejection reason, or `null` if it passes. Same role as
+ * `validateName` in `lib/users.ts`: a faster, friendlier rejection than a
+ * round trip, never the source of truth (the backend re-validates
+ * regardless).
+ *
+ * Measures the value **untrimmed**, unlike `validateName`, because the
+ * backend does too: `AuthCredentialsDto` and `ChangePasswordDto` deliberately
+ * don't `@Transform` a password, since its leading and trailing whitespace is
+ * part of the secret. Trimming before measuring here would reject a password
+ * of six spaces that the server would happily store.
+ *
+ * Only ever applies to a *new* password. A current password being proven —
+ * `ChangePassword`'s first field — is exempt for the same reason the backend
+ * exempts it: it was accepted at some point in the past, possibly under a
+ * smaller minimum, and telling its owner it is too short would be a lie about
+ * why the request failed.
+ */
+export function validatePassword(password: string): string | null {
+  if (!password) {
+    return 'Enter a password.';
+  }
+
+  return password.length >= PASSWORD_MIN_LENGTH
+    ? null
+    : `Password must be at least ${PASSWORD_MIN_LENGTH} characters.`;
+}
+
 /** `POST /auth/register` — 201 with a JWT, 409 if the email is taken. */
 export async function register(
   email: string,
