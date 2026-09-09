@@ -193,7 +193,21 @@ export function ChangePassword() {
     // until it expired and then log the user out for a reason they'd pin on
     // this form. Storing the new one is what makes "changed my password and
     // stayed signed in" true.
-    saveAccessToken(accessToken);
+    //
+    // Guarded, and the failure deliberately swallowed: `localStorage` can
+    // throw (Safari's private mode, a full quota), and by this point the
+    // password has already been changed. Letting that throw escape would
+    // reject `handleSubmit` before the two lines below run, leaving the form
+    // open with neither a success nor an error on a change that did happen —
+    // and the retry it invites can only come back "Current password is
+    // incorrect". The user keeps the old token, which still works until it
+    // expires; that is a far smaller problem than the silence.
+    try {
+      saveAccessToken(accessToken);
+    } catch {
+      // Nothing useful to say here: the change succeeded either way.
+    }
+
     closeForm();
     setIsSaved(true);
   };
@@ -310,9 +324,20 @@ export function ChangePassword() {
             <PasswordField
               autoFocus
               autoComplete="current-password"
+              description="The password you sign in with today."
               label="Current password"
               name="currentPassword"
               revealLabel="current password"
+              // Nothing to check beyond "there is one" — the only verdict on
+              // this value that means anything is `bcrypt`'s. It is written out
+              // anyway, rather than left to `isRequired` alone, because the
+              // message a bare `isRequired` produces is the *browser's* ("Please
+              // fill out this field", translated into the browser's UI language,
+              // not the app's), which is how the login page words its own
+              // empty-password rule too.
+              validate={(value) =>
+                value ? null : 'Enter your current password.'
+              }
               onChange={handleChange}
             />
             <PasswordField
@@ -332,23 +357,35 @@ export function ChangePassword() {
             />
             <PasswordField
               autoComplete="new-password"
+              description="Type the new password again."
               label="Confirm new password"
               name="confirmPassword"
               revealLabel="new password confirmation"
               // The one check that spans two fields, which is why the new
-              // password is held in state at all. `isRequired` covers the
-              // empty case; this only has to answer "is it the same value".
-              // Compared exactly, with no trimming or case folding, because
-              // that is how the two will be compared by bcrypt later.
+              // password is held in state at all. Compared exactly, with no
+              // trimming or case folding, because that is how the two will be
+              // compared by bcrypt later.
+              //
+              // The empty case is spelled out ahead of that comparison rather
+              // than left to `isRequired`: two empty fields *do* match, so the
+              // comparison would call an untouched form valid and hand the
+              // "fill this in" wording to the browser, in the browser's
+              // language rather than the app's.
               //
               // "New passwords", not "Passwords": this form also holds the
               // *current* password, and the bare phrase would read as that one
               // having been rejected — which is a different failure, arriving
               // from the server, and not one the user can see by looking at
               // the two fields above.
-              validate={(value) =>
-                value === newPassword ? null : 'New passwords do not match.'
-              }
+              validate={(value) => {
+                if (!value) {
+                  return 'Confirm your new password.';
+                }
+
+                return value === newPassword
+                  ? null
+                  : 'New passwords do not match.';
+              }}
               onChange={handleChange}
             />
 
@@ -400,13 +437,30 @@ export function ChangePassword() {
  * first and a generated one on the other two, rather than filling all three
  * with the password being replaced.
  *
- * `validate` is optional because the three fields are held to different rules:
- * the new password to `validatePassword`, the confirmation to matching it, and
- * the current password to nothing beyond `isRequired` — the backend exempts an
- * already-accepted password from the length rule (see `validatePassword`), and
- * the only verdict on it that means anything is `bcrypt`'s. `description` is
- * optional for the same reason: only the field that has a rule to state up
- * front has something to say before the user types.
+ * `validate` is required, though the three fields are held to very different
+ * rules: the new password to `validatePassword`, the confirmation to matching
+ * it, and the current password to nothing beyond being filled in — the backend
+ * exempts an already-accepted password from the length rule (see
+ * `validatePassword`), and the only verdict on it that means anything is
+ * `bcrypt`'s. Even that last field spells its rule out rather than leaning on
+ * `isRequired` alone, because the message `isRequired` produces on its own is
+ * the browser's, in the browser's UI language — "Заполните это поле." under an
+ * otherwise English form. Both auth pages word their own empty-field rules for
+ * the same reason.
+ *
+ * `description` is likewise **required**, even where the field has no rule
+ * worth stating: a `FieldError` replaces the `Description` rather than stacking
+ * under it, so a field that has one keeps the same height whether or not it is
+ * showing an error, and a field that doesn't grows a line the moment one
+ * appears. That matters here because the errors are committed on blur (React
+ * Aria's native validation behaviour), and the blur that clears them is
+ * usually the press on "Save password" — a field without a description would
+ * drop its error line and pull the button ~20px out from under the pointer
+ * between `mousedown` and `mouseup`, so the press lands on nothing and the
+ * user's first click after fixing a mistake does nothing at all. Keeping a
+ * description on every field is what makes that click land. Verified in the
+ * browser, and the reason the register form doesn't have the bug: its one
+ * validated field carries a hint too.
  *
  * `value` is optional too, so a field is uncontrolled unless a caller needs to
  * read it during render — only the new password does, so that the confirmation
@@ -426,11 +480,11 @@ function PasswordField({
 }: {
   autoComplete: 'current-password' | 'new-password';
   autoFocus?: boolean;
-  description?: string;
+  description: string;
   label: string;
   name: string;
   revealLabel: string;
-  validate?: (value: string) => string | null;
+  validate: (value: string) => string | null;
   value?: string;
   onChange: (value: string) => void;
 }) {
@@ -470,7 +524,7 @@ function PasswordField({
           </Button>
         </InputGroup.Suffix>
       </InputGroup>
-      {description && <Description>{description}</Description>}
+      <Description>{description}</Description>
       <FieldError />
     </TextField>
   );
