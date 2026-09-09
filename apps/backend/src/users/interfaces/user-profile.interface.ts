@@ -36,6 +36,22 @@ export const AVATAR_STATIC_ROUTE_PREFIX = '/avatars';
 export const AVATAR_URL_PREFIX = `/api${AVATAR_STATIC_ROUTE_PREFIX}`;
 
 /**
+ * Turns a stored `avatarPath` into something a browser can request — the one
+ * place `AVATAR_URL_PREFIX` is ever attached to a filename, so every avatar
+ * the API hands out (the caller's own profile, a file uploader's, a meeting
+ * participant's) resolves the same way.
+ *
+ * `avatarPath` is a generated single-segment filename (never a path or a URL,
+ * same convention as `MeetingFile.path`), so it needs no escaping here — but
+ * it is also an on-disk detail, and exposing it as a URL is what keeps the
+ * storage layout out of the API contract. A user who never uploaded one has
+ * null, and stays null rather than becoming a URL to nothing.
+ */
+export function toAvatarUrl(avatarPath: string | null): string | null {
+  return avatarPath ? `${AVATAR_URL_PREFIX}/${avatarPath}` : null;
+}
+
+/**
  * Public shape of the signed-in user's own profile, returned by
  * `GET /users/me`. Unlike `UserRecord` (the internal, password-hash-carrying
  * cross-handler message type in `user-record.interface.ts`) this one is safe
@@ -55,20 +71,16 @@ export interface UserProfileResponse {
 
 /**
  * Strips the password hash and persistence-only timestamps from a Prisma row,
- * and turns the stored `avatarPath` into something a browser can request.
- * `avatarPath` is a generated single-segment filename (never a path or a URL,
- * same convention as `MeetingFile.path`), so it needs no escaping here — but
- * it is also an on-disk detail, and exposing it as a URL is what keeps the
- * storage layout out of the API contract.
+ * leaving the fields the caller is allowed to see about themselves. Compare
+ * `toUserSummary` (`user-summary.interface.ts`), which produces the narrower
+ * shape the API hands out about *other* people.
  */
 export function toUserProfileResponse(user: User): UserProfileResponse {
   return {
     id: user.id,
     email: user.email,
     name: user.name,
-    avatarUrl: user.avatarPath
-      ? `${AVATAR_URL_PREFIX}/${user.avatarPath}`
-      : null,
+    avatarUrl: toAvatarUrl(user.avatarPath),
     createdAt: user.createdAt.toISOString(),
   };
 }
