@@ -17,10 +17,14 @@ import { useEffect, useRef, useState } from 'react';
 
 import { Brand } from '@/components/brand';
 import { CheckIcon, EnvelopeIcon, EyeIcon, LockIcon } from '@/components/icons';
-import { ApiError, register, saveAccessToken } from '@/lib/auth';
+import {
+  ApiError,
+  PASSWORD_MIN_LENGTH,
+  register,
+  saveAccessToken,
+  validatePassword,
+} from '@/lib/auth';
 
-/** Mirrors the backend's `PASSWORD_MIN_LENGTH` (`auth/dto/auth-credentials.dto.ts`). */
-const MIN_PASSWORD_LENGTH = 6;
 /**
  * Loosely mirrors the backend's `@IsEmail()`: a local part, then one or more
  * dot-separated domain labels, none of them empty. Deliberately permissive —
@@ -209,15 +213,7 @@ export default function RegisterPage() {
                     name="password"
                     type={isPasswordVisible ? 'text' : 'password'}
                     onChange={handleChange}
-                    validate={(value) => {
-                      if (!value) {
-                        return 'Enter a password.';
-                      }
-
-                      return value.length >= MIN_PASSWORD_LENGTH
-                        ? null
-                        : `Password must be at least ${MIN_PASSWORD_LENGTH} characters.`;
-                    }}
+                    validate={validatePassword}
                   >
                     <Label>Password</Label>
                     <InputGroup>
@@ -245,7 +241,7 @@ export default function RegisterPage() {
                       </InputGroup.Suffix>
                     </InputGroup>
                     <Description>
-                      At least {MIN_PASSWORD_LENGTH} characters.
+                      At least {PASSWORD_MIN_LENGTH} characters.
                     </Description>
                     <FieldError />
                   </TextField>

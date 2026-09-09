@@ -3,6 +3,7 @@
 import {
   Button,
   Card,
+  Description,
   FieldError,
   Form,
   InputGroup,
@@ -14,7 +15,13 @@ import { useRouter } from 'next/navigation';
 import { useEffect, useRef, useState } from 'react';
 
 import { EyeIcon, LockIcon } from '@/components/icons';
-import { ApiError, clearAccessToken, getAccessToken } from '@/lib/auth';
+import {
+  ApiError,
+  clearAccessToken,
+  getAccessToken,
+  PASSWORD_MIN_LENGTH,
+  validatePassword,
+} from '@/lib/auth';
 import { changePassword } from '@/lib/users';
 
 /**
@@ -33,14 +40,24 @@ import { changePassword } from '@/lib/users';
  * page: three empty password fields would be the largest thing on this screen
  * and they are irrelevant to the visit that only came to look at the profile.
  *
- * Checking that the confirmation matches and that the new password clears the
- * backend's minimum length is the next issue; so is storing the freshly signed
- * `accessToken` the call returns, and the success/`danger`-`Alert` treatment of
- * its outcome. Until then a failure surfaces the server's own message inline,
- * announced via `role="alert"`, and a success just closes the form. Not storing
- * the new token is survivable in the meantime and not a silent logout: the
- * backend's JWTs are stateless, so the one in `localStorage` stays valid until
- * it expires (see `changePassword` in `lib/users.ts`).
+ * Two rules are checked before anything is sent: the new password clears the
+ * backend's `PASSWORD_MIN_LENGTH` (`validatePassword` in `lib/auth.ts`), and
+ * the confirmation repeats it exactly. Both are rejections the server would
+ * otherwise have to make — the length one as a 400, the match one not at all,
+ * since `POST /auth/change-password` never sees the confirmation — so they are
+ * reported in the offending field's own `FieldError` and block the submit, and
+ * `handleSubmit` only ever runs on a body the backend has a chance of taking.
+ * Neither is the source of truth: the backend re-validates the length
+ * regardless, and the confirmation is purely a typo guard for a value the user
+ * cannot see while typing it.
+ *
+ * Storing the freshly signed `accessToken` the call returns, and the
+ * success/`danger`-`Alert` treatment of its outcome, is the next issue. Until
+ * then a failure surfaces the server's own message inline, announced via
+ * `role="alert"`, and a success just closes the form. Not storing the new
+ * token is survivable in the meantime and not a silent logout: the backend's
+ * JWTs are stateless, so the one in `localStorage` stays valid until it
+ * expires (see `changePassword` in `lib/users.ts`).
  */
 export function ChangePassword() {
   const router = useRouter();
@@ -48,6 +65,18 @@ export function ChangePassword() {
   const [isEditing, setIsEditing] = useState(false);
   const [isPending, setIsPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  /**
+   * The new password, mirrored into state purely so the confirmation field can
+   * be validated against it — it is the one value on this form another field's
+   * `validate` has to read, and `validate` only re-runs when something the
+   * component renders with has changed. The other two fields stay uncontrolled
+   * and are read from `FormData` at submit, like every other form in the app.
+   *
+   * Cleared by `closeForm`, so a plaintext password doesn't outlive the form
+   * that collected it — and so reopening the form doesn't find the field
+   * pre-filled with the password from the previous visit.
+   */
+  const [newPassword, setNewPassword] = useState('');
 
   const errorRef = useRef<HTMLParagraphElement>(null);
   const openButtonRef = useRef<HTMLButtonElement>(null);
@@ -75,6 +104,11 @@ export function ChangePassword() {
     }
   }, [error]);
 
+  const closeForm = () => {
+    setIsEditing(false);
+    setNewPassword('');
+  };
+
   const handleSubmit = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
 
@@ -87,9 +121,12 @@ export function ChangePassword() {
       return;
     }
 
-    const { currentPassword, newPassword } = Object.fromEntries(
+    // Only the current password is read back out of the form; the new one is
+    // already in state (the confirmation field validates against it) and the
+    // confirmation itself is never sent — the backend has no field for it.
+    const { currentPassword } = Object.fromEntries(
       new FormData(event.currentTarget),
-    ) as Record<'currentPassword' | 'newPassword', string>;
+    ) as Record<'currentPassword', string>;
 
     const token = getAccessToken();
 
@@ -105,7 +142,7 @@ export function ChangePassword() {
 
     try {
       await changePassword(token, { currentPassword, newPassword });
-      setIsEditing(false);
+      closeForm();
     } catch (cause) {
       // 401/404 mean the session is over, exactly as on the page's own fetch.
       // A wrong current password is deliberately **not** one of them — the
@@ -184,16 +221,38 @@ export function ChangePassword() {
             />
             <PasswordField
               autoComplete="new-password"
+              // Stated up front rather than only after a rejection, like the
+              // register form's password hint and the name editor's limit.
+              description={`At least ${PASSWORD_MIN_LENGTH} characters.`}
               label="New password"
               name="newPassword"
               revealLabel="new password"
-              onChange={handleChange}
+              validate={validatePassword}
+              value={newPassword}
+              onChange={(value) => {
+                setNewPassword(value);
+                handleChange();
+              }}
             />
             <PasswordField
               autoComplete="new-password"
               label="Confirm new password"
               name="confirmPassword"
               revealLabel="new password confirmation"
+              // The one check that spans two fields, which is why the new
+              // password is held in state at all. `isRequired` covers the
+              // empty case; this only has to answer "is it the same value".
+              // Compared exactly, with no trimming or case folding, because
+              // that is how the two will be compared by bcrypt later.
+              //
+              // "New passwords", not "Passwords": this form also holds the
+              // *current* password, and the bare phrase would read as that one
+              // having been rejected — which is a different failure, arriving
+              // from the server, and not one the user can see by looking at
+              // the two fields above.
+              validate={(value) =>
+                value === newPassword ? null : 'New passwords do not match.'
+              }
               onChange={handleChange}
             />
 
@@ -210,7 +269,7 @@ export function ChangePassword() {
                 isDisabled={isPending}
                 size="sm"
                 variant="ghost"
-                onPress={() => setIsEditing(false)}
+                onPress={closeForm}
               >
                 Cancel
               </Button>
@@ -244,23 +303,39 @@ export function ChangePassword() {
  * first and a generated one on the other two, rather than filling all three
  * with the password being replaced.
  *
- * `isRequired` is the only check here for now — rejecting a too-short new
- * password and a confirmation that doesn't match is the next issue.
+ * `validate` is optional because the three fields are held to different rules:
+ * the new password to `validatePassword`, the confirmation to matching it, and
+ * the current password to nothing beyond `isRequired` — the backend exempts an
+ * already-accepted password from the length rule (see `validatePassword`), and
+ * the only verdict on it that means anything is `bcrypt`'s. `description` is
+ * optional for the same reason: only the field that has a rule to state up
+ * front has something to say before the user types.
+ *
+ * `value` is optional too, so a field is uncontrolled unless a caller needs to
+ * read it during render — only the new password does, so that the confirmation
+ * field's `validate` can compare against it. The rest are read from `FormData`
+ * on submit.
  */
 function PasswordField({
   autoComplete,
   autoFocus,
+  description,
   label,
   name,
   revealLabel,
+  validate,
+  value,
   onChange,
 }: {
   autoComplete: 'current-password' | 'new-password';
   autoFocus?: boolean;
+  description?: string;
   label: string;
   name: string;
   revealLabel: string;
-  onChange: () => void;
+  validate?: (value: string) => string | null;
+  value?: string;
+  onChange: (value: string) => void;
 }) {
   const [isVisible, setIsVisible] = useState(false);
 
@@ -270,6 +345,8 @@ function PasswordField({
       isRequired
       name={name}
       type={isVisible ? 'text' : 'password'}
+      validate={validate}
+      value={value}
       onChange={onChange}
     >
       <Label>{label}</Label>
@@ -296,6 +373,7 @@ function PasswordField({
           </Button>
         </InputGroup.Suffix>
       </InputGroup>
+      {description && <Description>{description}</Description>}
       <FieldError />
     </TextField>
   );

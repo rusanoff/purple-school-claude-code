@@ -326,10 +326,10 @@ export interface ChangePasswordInput {
  * ("newPassword must be longer than or equal to 6 characters") rather than
  * like something written for the user. Callers should keep it off the screen
  * by pre-checking the length client-side, the way `validateName` and
- * `validateAvatar` guard the other writable inputs here — this module has no
- * such mirror of the backend's `PASSWORD_MIN_LENGTH` yet, so until it does,
- * that check lives with the form (as `MIN_PASSWORD_LENGTH` already does in
- * `app/register/page.tsx`).
+ * `validateAvatar` guard the other writable inputs here — that mirror is
+ * `validatePassword` in `lib/auth.ts`, which lives there rather than here
+ * because the register page checks against it too, and `ChangePassword`
+ * already runs it before this function is ever called.
  *
  * 401 and 404 keep the meanings they have on every other function in this
  * module — the token is missing or expired, or it verified but the user row is

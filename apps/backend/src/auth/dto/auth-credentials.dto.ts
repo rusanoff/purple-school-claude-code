@@ -12,8 +12,9 @@ import { IsEmail, IsString, MinLength } from 'class-validator';
  *
  * The frontend is a separate workspace app that cannot import this, so its
  * client-side check keeps a mirror of this number
- * (`MIN_PASSWORD_LENGTH` in `apps/frontend/app/register/page.tsx`, and the
- * change-password form of Фаза 8). Same rule as `USER_NAME_MIN_LENGTH`:
+ * (`PASSWORD_MIN_LENGTH` in `apps/frontend/lib/auth.ts`, checked through
+ * `validatePassword` by both the register page and the profile page's
+ * change-password form). Same rule as `USER_NAME_MIN_LENGTH`:
  * a mirror, not a derivation — raising the value here without updating it
  * there leaves the client validating against a stale limit and surfacing
  * unexplained 400s, so both must move in the same change.
