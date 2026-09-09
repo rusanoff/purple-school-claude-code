@@ -2,9 +2,20 @@ const { execFileSync } = require('child_process')
 const fs = require('fs')
 const os = require('os')
 const path = require('path')
+const { startSession } = require('../ralph-session')
 
-const CONFIG_FILE = '.claude/ralph.config.json'
-const COUNTER_FILE = '.claude/ralph.iterations.json'
+// Claude Code runs this hook with the *session's* cwd, and the model moves that
+// around with `cd`: a session ended inside apps/backend, node resolved
+// apps/backend/.claude/hooks/stop.js, and the loop died mid-phase on a missing
+// module. Anchor to the repo root — every path and git command below assumes
+// it. settings.json invokes the hook by absolute path for the same reason.
+const projectDir = process.env.CLAUDE_PROJECT_DIR || path.resolve(__dirname, '..', '..')
+process.chdir(projectDir)
+
+const CONFIG_FILE = path.join(projectDir, '.claude/ralph.config.json')
+const COUNTER_FILE = path.join(projectDir, '.claude/ralph.iterations.json')
+const PID_FILE = path.join(projectDir, '.claude/ralph.pid')
+const LOG_FILE = path.join(projectDir, '.claude/ralph.log')
 
 const config = JSON.parse(fs.readFileSync(CONFIG_FILE, 'utf8'))
 
@@ -64,7 +75,7 @@ const withRetry = (label, fn) => {
     } catch (error) {
       if (attempt >= ghRetries) throw error
       const delay = ghRetryDelaySeconds * attempt
-      console.log(`⚠️ ${label}: попытка ${attempt}/${ghRetries} не удалась, повтор через ${delay} с...`)
+      log(`⚠️ ${label}: попытка ${attempt}/${ghRetries} не удалась, повтор через ${delay} с...`)
       sleepSeconds(delay)
     }
   }
@@ -72,12 +83,55 @@ const withRetry = (label, fn) => {
 
 const gh = (args) => withRetry(`gh ${args.slice(0, 2).join(' ')}`, () => capture('gh', args))
 
+// Stdout хука видно только в транскрипте сессии, а у фонового цикла транскрипт
+// никто не читает. Поэтому всё, что хук говорит, дублируется в ralph.log — это
+// единственное место, где видно ход цикла.
+const log = (line) => {
+  console.log(line)
+  try {
+    fs.appendFileSync(LOG_FILE, `${line}\n`)
+  } catch {
+    // Лог — удобство, а не условие работы цикла.
+  }
+}
+
 const saveCounter = (counter) => fs.writeFileSync(COUNTER_FILE, JSON.stringify(counter))
+
+// The pid file means "a background session is running". Every path that ends
+// the loop clears it, so a restart isn't refused by a stale pid.
+const clearPid = () => fs.rmSync(PID_FILE, { force: true })
+
+// Этот хук стоит на всех сессиях Claude Code в репозитории, а не только на
+// ралфовых: интерактивная сессия человека, закончив отвечать, тоже его дёргает
+// — и однажды именно так и сдвинула цикл. Двигать его имеет право только та
+// сессия, которую Ralph сам записал в pid-файл; хук запущен из неё, значит он
+// её потомок.
+const ownerPid = () => {
+  try {
+    return Number(fs.readFileSync(PID_FILE, 'utf8').trim()) || null
+  } catch {
+    return null
+  }
+}
+
+const isDescendantOf = (pid) => {
+  let current = process.pid
+  for (let depth = 0; current > 1 && depth < 30; depth++) {
+    if (current === pid) return true
+    try {
+      current = Number(capture('ps', ['-p', String(current), '-o', 'ppid=']))
+    } catch {
+      return false
+    }
+  }
+  return false
+}
 
 // stdin is /dev/null on purpose: the hook's own stdin holds Claude Code's JSON
 // payload, which a nested `claude -p` would read as extra prompt input.
 const runClaude = (prompt, extraArgs = [], childRole = '') =>
   execFileSync('claude', ['-p', prompt, ...extraArgs], {
+    cwd: projectDir,
     stdio: ['ignore', 'inherit', 'inherit'],
     env: { ...process.env, RALPH_CHILD: childRole },
   })
@@ -157,7 +211,7 @@ const createPr = (phase) => {
   } catch (error) {
     const pr = findOpenPr(phase.branch)
     if (!pr) throw error
-    console.log(`ℹ️ gh pr create отчитался ошибкой, но PR #${pr.number} создан.`)
+    log(`ℹ️ gh pr create отчитался ошибкой, но PR #${pr.number} создан.`)
     return pr
   }
 
@@ -179,23 +233,23 @@ const mergePr = (prNumber) => {
     )
 
     if (pr.state === 'MERGED') {
-      console.log(`✅ PR #${prNumber} смержен.`)
+      log(`✅ PR #${prNumber} смержен.`)
       return true
     }
     if (pr.state === 'CLOSED') {
-      console.log(`⛔ PR #${prNumber} закрыт без мержа.`)
+      log(`⛔ PR #${prNumber} закрыт без мержа.`)
       return false
     }
     // Конфликты не обходятся ни одним способом мержа — тут нужен человек.
     if (pr.mergeable === 'CONFLICTING') {
-      console.log(`⛔ PR #${prNumber} конфликтует с ${baseBranch} — разреши конфликты вручную.`)
+      log(`⛔ PR #${prNumber} конфликтует с ${baseBranch} — разреши конфликты вручную.`)
       return false
     }
 
     // BEHIND: репозиторий требует ветку, обновлённую до базовой. GitHub умеет
     // подтянуть базу сам, после чего mergeStateStatus пересчитается.
     if (pr.mergeStateStatus === 'BEHIND') {
-      console.log(`🔄 PR #${prNumber} отстал от ${baseBranch} — обновляем ветку...`)
+      log(`🔄 PR #${prNumber} отстал от ${baseBranch} — обновляем ветку...`)
       tryRun('gh', ['pr', 'update-branch', String(prNumber)])
     } else if (
       MERGEABLE_STATUSES.has(pr.mergeStateStatus) ||
@@ -207,21 +261,21 @@ const mergePr = (prNumber) => {
       if (mergeAdmin) args.push('--admin')
 
       try {
-        console.log(`🔀 Мержим PR #${prNumber} (${mergeMethod})...`)
+        log(`🔀 Мержим PR #${prNumber} (${mergeMethod})...`)
         run('gh', args)
-        console.log(`✅ PR #${prNumber} смержен.`)
+        log(`✅ PR #${prNumber} смержен.`)
         return true
       } catch (error) {
         // Состояние могло измениться между чтением статуса и самим мержем —
         // не роняем цикл, а уходим на следующий опрос.
-        console.log(`⚠️ Мерж не прошёл (${error.message}) — повторим.`)
+        log(`⚠️ Мерж не прошёл (${error.message}) — повторим.`)
       }
     } else {
-      console.log(`⏳ PR #${prNumber}: статус ${pr.mergeStateStatus || 'UNKNOWN'} — ждём...`)
+      log(`⏳ PR #${prNumber}: статус ${pr.mergeStateStatus || 'UNKNOWN'} — ждём...`)
     }
 
     if (Date.now() >= deadline) {
-      console.log(`⏳ PR #${prNumber} не удалось смержить за ${mergeWaitMinutes} мин.`)
+      log(`⏳ PR #${prNumber} не удалось смержить за ${mergeWaitMinutes} мин.`)
       return false
     }
     sleepSeconds(mergePollSeconds)
@@ -250,7 +304,7 @@ const checkoutPhaseBranch = (branch) => {
   if (tryRun('git', ['rev-parse', '--verify', '--quiet', `refs/heads/${branch}`])) {
     run('git', ['checkout', branch])
     if (!tryRun('git', ['merge-base', '--is-ancestor', baseBranch, branch])) {
-      console.log(`⚠️ Ветка ${branch} уже существует и отстаёт от ${baseBranch} — проверь вручную.`)
+      log(`⚠️ Ветка ${branch} уже существует и отстаёт от ${baseBranch} — проверь вручную.`)
     }
     return
   }
@@ -258,15 +312,47 @@ const checkoutPhaseBranch = (branch) => {
   run('git', ['checkout', '-b', branch])
 }
 
+// The next session used to be a synchronous child, so every iteration stayed
+// nested inside the previous one: the last run reached 17 live `claude`
+// processes that did nothing but hold memory until the very end, and one
+// failing child tore down the whole stack. Now the hook detaches the session
+// and exits, so depth stays at 1 no matter how many phases are left. The price
+// is that its output no longer reaches the terminal — it goes to ralph.log.
 const startPhase = (phase) => {
   const prompt = config.prompt
     .replace('{milestone}', phase.milestone)
     .replace('{branch}', phase.branch)
 
-  runClaude(prompt, ['--max-turns', String(config.maxTurns)])
+  const pid = startSession({
+    projectDir,
+    prompt,
+    maxTurns: config.maxTurns,
+    label: `${phase.milestone} | ${phase.branch}`,
+  })
+
+  log(`▶️ Сессия запущена в фоне (pid ${pid}), вывод: .claude/ralph.log`)
 }
 
 const main = () => {
+  const owner = ownerPid()
+  if (!owner || !isDescendantOf(owner)) return
+
+  // Сессии больше не вложены друг в друга, поэтому упавшая не рвёт цепочку —
+  // цикл просто запустит следующую. Обратная сторона: сессия, которая умирает
+  // мгновенно (обычная причина — исчерпанный лимит аккаунта, ровно на нём
+  // прогон и встал в прошлый раз), за секунды сожгла бы весь бюджет итераций
+  // фазы на бессмысленные перезапуски. Момент старта — mtime pid-файла: его
+  // пишут ровно тогда, когда сессию запускают.
+  const sessionSeconds = (Date.now() - fs.statSync(PID_FILE).mtimeMs) / 1000
+  if (sessionSeconds < 60) {
+    log(
+      `⛔ Сессия завершилась за ${Math.round(sessionSeconds)} с, ничего не успев сделать ` +
+        '(чаще всего это лимит аккаунта). Цикл остановлен.',
+    )
+    clearPid()
+    return
+  }
+
   let counter = { count: 0, phaseIndex: 0 }
   if (fs.existsSync(COUNTER_FILE)) {
     counter = JSON.parse(fs.readFileSync(COUNTER_FILE, 'utf8'))
@@ -278,13 +364,15 @@ const main = () => {
   const phase = phases[counter.phaseIndex]
 
   if (!phase) {
-    console.log('🎉 Все фазы завершены.')
+    log('🎉 Все фазы завершены.')
+    clearPid()
     return
   }
 
   if (counter.count >= config.maxIterations) {
-    console.log(`⛔ Лимит итераций (${config.maxIterations}) достигнут.`)
+    log(`⛔ Лимит итераций (${config.maxIterations}) достигнут.`)
     saveCounter({ count: 0, phaseIndex: counter.phaseIndex })
+    clearPid()
     return
   }
 
@@ -295,24 +383,24 @@ const main = () => {
     saveCounter(counter)
 
     const next = openIssues[0]
-    console.log(
+    log(
       `🔄 Фаза ${counter.phaseIndex + 1} — Итерация ${counter.count}/${config.maxIterations} — Issue #${next.number}: ${next.title}`,
     )
-    console.log(`📋 Осталось: ${openIssues.length}`)
+    log(`📋 Осталось: ${openIssues.length}`)
 
     startPhase(phase)
     return
   }
 
-  console.log(`✅ Фаза ${counter.phaseIndex + 1} завершена. Создаём PR...`)
+  log(`✅ Фаза ${counter.phaseIndex + 1} завершена. Создаём PR...`)
 
   let pr = findOpenPr(phase.branch)
   if (pr) {
-    console.log(`ℹ️ PR #${pr.number} уже открыт — переиспользуем его.`)
+    log(`ℹ️ PR #${pr.number} уже открыт — переиспользуем его.`)
   } else {
     pr = createPr(phase)
 
-    console.log('🔍 Ревью Fable 5.1...')
+    log('🔍 Ревью Fable 5.1...')
     runClaude(
       `Проведи детальное code review PR #${pr.number}. Проверь архитектуру, безопасность, производительность и соответствие PRD. Оставь комментарии в PR через gh cli.`,
       ['--model', 'claude-fable-5-1', '--max-turns', String(config.maxTurns)],
@@ -321,7 +409,8 @@ const main = () => {
   }
 
   if (!mergePr(pr.number)) {
-    console.log(`⏸️ Цикл остановлен: разберись с PR #${pr.number} и запусти Ralph снова.`)
+    log(`⏸️ Цикл остановлен: разберись с PR #${pr.number} и запусти Ralph снова.`)
+    clearPid()
     return
   }
 
@@ -336,11 +425,12 @@ const main = () => {
 
   const nextPhase = phases[counter.phaseIndex]
   if (!nextPhase) {
-    console.log('🎉 Все фазы завершены!')
+    log('🎉 Все фазы завершены!')
+    clearPid()
     return
   }
 
-  console.log(`➡️ Фаза ${counter.phaseIndex + 1}: ${nextPhase.milestone}`)
+  log(`➡️ Фаза ${counter.phaseIndex + 1}: ${nextPhase.milestone}`)
   checkoutPhaseBranch(nextPhase.branch)
   startPhase(nextPhase)
 }

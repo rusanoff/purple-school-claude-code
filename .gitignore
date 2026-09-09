@@ -14,5 +14,7 @@ coverage/
 __pycache__/
 *.pyc
 
-# Ralph loop local state (counter, not source)
+# Ralph loop local state (counter, background session log and its pid)
 .claude/ralph.iterations.json
+.claude/ralph.log
+.claude/ralph.pid
