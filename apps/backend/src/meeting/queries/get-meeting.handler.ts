@@ -6,6 +6,7 @@ import {
   MeetingResponse,
   toMeetingResponse,
 } from '../interfaces/meeting.interface';
+import { loadParticipantDirectory } from '../participants/participant-directory';
 import { GetMeetingQuery } from './get-meeting.query';
 
 @QueryHandler(GetMeetingQuery)
@@ -26,8 +27,15 @@ export class GetMeetingHandler implements IQueryHandler<GetMeetingQuery> {
       throw new NotFoundException('Meeting not found');
     }
 
+    // Before the participant lookup, not after: nobody who fails this gets
+    // to learn anything about the people on a meeting they can't read.
     assertMeetingAccess(meeting, { userId, email });
 
-    return toMeetingResponse(meeting, userId);
+    const participants = await loadParticipantDirectory(
+      this.prisma,
+      meeting.participants,
+    );
+
+    return toMeetingResponse(meeting, userId, participants);
   }
 }
