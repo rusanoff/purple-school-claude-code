@@ -17,6 +17,7 @@ import { useRouter } from 'next/navigation';
 import { useCallback, useEffect, useRef, useState } from 'react';
 
 import { getDisplayName } from '@/components/avatar';
+import { ChangePassword } from '@/components/change-password';
 import {
   ArrowLeftIcon,
   CalendarIcon,
@@ -188,6 +189,17 @@ export default function ProfilePage() {
           </dl>
         </Card>
       )}
+
+      {/*
+        A second card rather than a row in the one above, and gated on the same
+        `success` — not because it needs the profile (it reads nothing from it,
+        see `ChangePassword`), but because an `error` here means the app could
+        not reach `GET /users/me` at all, and offering to write a new password
+        over a connection that just failed to read one is an invitation to a
+        failed save. The Retry button in the alert is the way forward from that
+        state.
+      */}
+      {result.kind === 'success' && <ChangePassword />}
     </main>
   );
 }
