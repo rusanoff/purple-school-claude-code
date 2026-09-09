@@ -39,7 +39,12 @@ describe('GetMeetingHandler', () => {
 
     expect(findMany).toHaveBeenCalledTimes(1);
     expect(findMany).toHaveBeenCalledWith({
-      where: { email: { in: ['ada@example.com', 'grace@example.com'] } },
+      where: {
+        email: {
+          in: ['ada@example.com', 'grace@example.com'],
+          mode: 'insensitive',
+        },
+      },
       select: USER_SUMMARY_SELECT,
     });
     expect(meeting.participants).toEqual([

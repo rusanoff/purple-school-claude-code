@@ -50,6 +50,7 @@ describe('GetMeetingsHandler', () => {
       where: {
         email: {
           in: ['ada@example.com', 'grace@example.com', 'linus@example.com'],
+          mode: 'insensitive',
         },
       },
       select: USER_SUMMARY_SELECT,
